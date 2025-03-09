@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <title>PBRT Render</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <h1>PBRT Renderer</h1>
+
+    <div class="input-section">
+        <h2>选择 PBRT 文件来源</h2>
+        <div class="input-options">
+            <button id="upload-option">上传文件</button>
+            <button id="editor-option">在线编辑器</button>
+        </div>
+
+        <div id="upload-panel" style="display: none;">
+            <input type="file" id="pbrtFileUpload" accept=".pbrt">
+        </div>
+
+        <div id="editor-panel" style="display: none;">
+            <label for="pbrtEditor"></label><textarea id="pbrtEditor" placeholder="在此处编写或粘贴 .pbrt 代码"></textarea>
+        </div>
+    </div>
+
+    <div class="exposure-control">
+        <label for="exposureInput">曝光度:</label>
+        <input type="number" id="exposureInput" value="4.0" step="0.1" min="-10" max="100">
+    </div>
+
+
+    <button id="renderButton" disabled>渲染</button>
+
+    <div id="result-section" style="display: none;">
+        <h2>渲染结果</h2>
+        <div class="progress-container" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-fill"></div>
+            </div>
+            <div class="progress-text">正在连接服务器...</div>
+        </div>
+        <div id="error-message" class="error" style="display: none;"></div>
+            <div id="warning-message" class="warning" style="display: none;"></div>
+            <div id="success-message" class="success" style="display: none;"></div>
+            <pre id="pbrt-log"></pre> <p style="color: gray;">(PBRT 日志输出，如有)</p>
+            <div id="status-log-section">
+            <h3>状态日志</h3>
+            <pre id="status-log"></pre>
+        </div>
+        <div class="aspect-wrapper">
+            <div id="three-container">
+                <canvas id="three-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- three.js 依赖 -->
+    <script async src="https://unpkg.com/es-module-shims@2.0.10/dist/es-module-shims.js"></script>
+    
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.174.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.174.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+
+        // 新增：哈希计算队列
+        let hashingQueue = Promise.resolve();
+        let currentHash = '';
+        let cachedHash = '';
+        let currentExrBlob = null;
+        let textureAspect = 1; // 存储当前纹理的宽高比
+        let renderTarget = null;
+
+        // discarded
+        async function loadEXRTexture2(exrData) {
+            return new Promise((resolve, reject) => {
+                const loader = new EXRLoader();
+                const blob = new Blob([exrData], { type: 'image/x-exr' });
+                const url = URL.createObjectURL(blob);
+
+                loader.load(url, 
+                    texture => {
+                        URL.revokeObjectURL(url);
+                        if (!texture?.image) {
+                            reject(new Error('无效的EXR文件格式'));
+                            return;
+                        }
+                        // 获取实际图像尺寸
+                        textureAspect = texture.image.width / texture.image.height;
+                        updateCameraAndAspect();
+                        resolve(texture);
+                    },
+                    undefined,
+                    error => {
+                        URL.revokeObjectURL(url);
+                        reject(new Error(`EXR加载失败: ${error.message}`));
+                    }
+                );
+            });
+        }
+
+        // 修改loadEXRTexture函数
+        async function loadEXRTexture(arrayBuffer) {
+            return new Promise((resolve, reject) => {
+                const loader = new EXRLoader();
+                loader.parse(arrayBuffer, (texture) => {
+                    if (!texture?.image) {
+                        reject(new Error('无效的EXR文件格式'));
+                        return;
+                    }
+                    // Store aspect ratio for later use
+                    textureAspect = texture.image.width / texture.image.height;
+                    updateCameraAndAspect();
+                    resolve(texture);
+                }, (e)=>{}, error => { // 提供第三个error callback。
+                    reject(new Error(`EXR加载失败: ${error.message}`));
+                });
+            });
+        }
+
+        function updateCameraAndAspect() {
+            if (!textureAspect) return; // Skip if no texture loaded yet
+
+            // 容器宽高
+            const container = document.getElementById('three-container');
+            const containerWidth = container.clientWidth;
+            const containerHeight = containerWidth / textureAspect;
+            container.style.width = `${containerWidth}px`; // 明确设置宽
+            container.style.height = `${containerHeight}px`; // 明确设置高
+
+            // 设置外层容器比例
+            container.style.aspectRatio = `${textureAspect}`;
+            
+           // 在 updateCameraAndAspect 函数中，修改相机参数逻辑：
+            camera.left = -0.5 * textureAspect; // 根据宽高比调整左右范围
+            camera.right = 0.5 * textureAspect;
+            camera.top = 0.5;
+            camera.bottom = -0.5;
+            camera.updateProjectionMatrix();
+            // 调整渲染器
+            renderer.setSize(containerWidth, containerHeight);
+            render();
+        }
+
+        // 响应式调整布局
+        new ResizeObserver(() => updateCameraAndAspect()).observe(document.getElementById('three-container'));
+
+        // 计算文件哈希的函数
+        async function calculateFileHash(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // 计算文本哈希的函数
+        async function calculateTextHash(text) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(text);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        let renderer, scene, camera, material;
+        let currentTexture = null;
+        let isSceneInitialized = false;
+
+        // 初始化Three.js场景
+        function initThreeScene() {
+            renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                canvas: document.querySelector('#three-canvas'),
+                alpha: true // 允许透明背景
+            });
+
+            // 使用更现代的色调映射算法
+            //renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMapping = THREE.ReinhardToneMapping;
+            
+            renderer.toneMappingExposure = parseFloat(document.getElementById('exposureInput').value);
+            renderer.setClearColor(0x000000, 0);
+            
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0, 1);
+            
+            // 初始化全屏适配
+            window.addEventListener('resize', updateCameraAndAspect);
+        }
+
+        // 更新渲染器尺寸
+        function updateRendererSize() {
+            const container = document.getElementById('three-container');
+            const width = container.clientWidth;
+            const height = Math.min(window.innerHeight * 0.6, width * 0.75);
+            
+            renderer.setSize(width, height);
+            camera.updateProjectionMatrix();
+            render();
+        }
+
+        // 渲染函数
+        function render() {
+            if (scene && camera) {
+                renderer.render(scene, camera);
+            }
+        }
+
+        const uploadOptionButton = document.getElementById('upload-option');
+        const editorOptionButton = document.getElementById('editor-option');
+        const uploadPanel = document.getElementById('upload-panel');
+        const editorPanel = document.getElementById('editor-panel');
+        const pbrtFileUpload = document.getElementById('pbrtFileUpload');
+        const pbrtEditor = document.getElementById('pbrtEditor');
+        const renderButton = document.getElementById('renderButton');
+        const resultSection = document.getElementById('result-section');
+        const pbrtLog = document.getElementById('pbrt-log');
+        const errorMessageDiv = document.getElementById('error-message');
+        const warningMessageDiv = document.getElementById('warning-message');
+        const successMessageDiv = document.getElementById('success-message');
+        const statusLog = document.getElementById('status-log');
+        const exposureInput = document.getElementById('exposureInput');
+
+        let inputFile = null;
+        let editorContent = "";
+        let inputMode = null; // 'upload' or 'editor'
+
+        // 初始化Three.js
+        initThreeScene();
+        isSceneInitialized = true;
+
+        // 曝光度输入事件
+        exposureInput.addEventListener('input', () => {
+            const value = parseFloat(exposureInput.value);
+            if (!isNaN(value)) {
+                renderer.toneMappingExposure = value;
+                render();
+            }
+        });
+
+        uploadOptionButton.addEventListener('click', () => {
+            inputMode = 'upload';
+            uploadPanel.style.display = 'block';
+            editorPanel.style.display = 'none';
+            renderButton.disabled = inputFile === null;
+            clearMessagesAndImage();
+            clearStatusLog(); // Clear status log when switching input mode
+        });
+
+        editorOptionButton.addEventListener('click', () => {
+            inputMode = 'editor';
+            editorPanel.style.display = 'block';
+            uploadPanel.style.display = 'none';
+            renderButton.disabled = editorContent.trim() === "";
+            clearMessagesAndImage();
+            clearStatusLog(); // Clear status log when switching input mode
+        });
+
+        pbrtFileUpload.addEventListener('change', (event) => {
+            inputFile = event.target.files[0];
+            renderButton.disabled = inputFile === null;
+            clearMessagesAndImage();
+            clearStatusLog(); // Clear status log when file is changed
+        });
+
+        pbrtEditor.addEventListener('input', (event) => {
+            editorContent = event.target.value;
+            renderButton.disabled = editorContent.trim() === "";
+            clearMessagesAndImage();
+            clearStatusLog(); // Clear status log when editor content is changed
+        });
+
+        // 渲染按钮点击处理（改用XMLHttpRequest）
+        renderButton.addEventListener('click', async () => {
+            const progressContainer = document.querySelector('.progress-container');
+            const progressFill = document.querySelector('.progress-fill');
+            const progressText = document.querySelector('.progress-text');
+
+            renderButton.disabled = true;
+            clearMessages();
+            statusLog.textContent = '开始处理...\n';
+
+            const xhr = new XMLHttpRequest();
+            try {
+                xhr.responseType = 'json';
+
+                // 新增：速度计算变量
+                let lastLoaded = 0;
+                let lastTime = Date.now();
+
+                // 计算哈希
+                let newHash = '';
+                if (inputMode === 'upload' && inputFile) {
+                    newHash = await calculateFileHash(inputFile);
+                } else if (inputMode === 'editor' && editorContent.trim()) {
+                    newHash = await calculateTextHash(editorContent);
+                } else {
+                    showError('请选择有效的输入方式');
+                    return;
+                }
+
+                currentHash = newHash;
+                statusLog.textContent += `输入内容哈希值: ${currentHash}\n`;
+
+                if (currentHash === cachedHash && currentExrBlob) {
+                    statusLog.textContent += '检测到相同场景，使用缓存EXR\n';
+                    await updateScene(currentExrBlob);
+                    render(); // 手动触发渲染
+                    resultSection.style.display = 'block';
+                    return;
+                }
+
+                // 清空旧缓存
+                if (cachedHash && currentHash !== cachedHash) {
+                    URL.revokeObjectURL(currentExrBlob);
+                    currentExrBlob = null;
+                    cachedHash = '';
+                    statusLog.textContent += '场景有变化，清空旧缓存\n';
+                }
+                
+                // 显示进度条
+                progressContainer.style.display = 'block';
+                progressFill.style.width = '0%';
+                progressText.textContent = '准备中...';
+
+                // 模拟渲染进度 (在上传完成后开始)
+                let renderProgress = 0;
+                let renderInterval = null;
+                const simulateRenderProgress = () => {
+                    renderInterval = setInterval(() => {
+                        renderProgress += 5; // 每次增加 5% 进度，可以调整
+                        if (renderProgress > 99) {
+                            renderProgress = 99; // 避免直接跳到100%，留给下载
+                            clearInterval(renderInterval);
+                        }
+                        progressFill.style.width = `${renderProgress}%`;
+                        progressText.textContent = `后端渲染中 ${renderProgress}%`;
+                    }, 200); // 每 200 毫秒更新一次，可以调整
+                };
+
+                // 上传进度
+                xhr.upload.addEventListener('progress', e => {
+                    if (e.lengthComputable) {
+                        const percent = (e.loaded / e.total) * 100;
+                        const now = Date.now();
+                        const speed = ((e.loaded - lastLoaded) / (now - lastTime)) * 1000; // 字节/秒
+                        lastLoaded = e.loaded;
+                        lastTime = now;
+
+                        progressFill.style.width = `${percent}%`;
+                        progressText.textContent = `上传 ${Math.round(percent)}% (${(speed / 1024 / 1024).toFixed(2)}MB/s)`;
+                        if (percent === 100) {
+                            progressText.textContent = '上传完成，等待后端渲染...'; // 上传完成后修改文字
+                            simulateRenderProgress(); // 添加模拟进度调用
+                        }
+                    }
+                });
+
+                // 下载进度
+                xhr.addEventListener('progress', e => {
+                    clearInterval(renderInterval); // 如果开始下载，清除渲染模拟
+                    if (e.lengthComputable) {
+                        const percent = (e.loaded / e.total) * 100;
+                        const now = Date.now();
+                        const speed = ((e.loaded - lastLoaded) / (now - lastTime)) * 1000; // 字节/秒
+                        lastLoaded = e.loaded;
+                        lastTime = now;
+
+                        progressFill.style.width = `${percent}%`;
+                        progressText.textContent = `下载 ${Math.round(percent)}% (${(speed / 1024 / 1024).toFixed(2)}MB/s)`;
+                    }
+                });
+                xhr.onreadystatechange = async function() {
+                    if (xhr.readyState === XMLHttpRequest.DONE) {
+                        progressContainer.style.display = 'none';
+                        if (xhr.status === 200) {
+                            try {
+                                const response = xhr.response;
+                                if (response.status !== 'success') {
+                                    throw new Error(response.error || '未知错误');
+                                }
+
+                                // Base64解码
+                                const raw = atob(response.exrData);
+                                const buffer = new Uint8Array(raw.length);
+                                for (let i = 0; i < raw.length; i++) {
+                                    buffer[i] = raw.charCodeAt(i);
+                                }
+
+                                currentExrBlob = new Blob([buffer], {type: 'image/x-exr'});
+                                cachedHash = currentHash;
+                                await updateScene(currentExrBlob);
+                                
+                                resultSection.style.display = 'block';
+                                appendToStatusLog(response.message);
+                            } catch (error) {
+                                console.error('处理响应出错:', error);
+                                showError(`处理渲染结果失败: ${error.message}`);
+                                appendToStatusLog(`处理错误: ${error.message}`, new Date(), 'error');
+                            }
+                        } else { 
+                            // 新的错误处理逻辑
+                            let errorMessage = `HTTP ${xhr.status} 错误`;
+                            try {
+                                if (xhr.response && xhr.response.error) { // 直接检查
+                                    errorMessage = xhr.response.error;
+                                }
+                            } catch (e) {
+                                console.warn('解析错误信息失败:', e);
+                            }
+                            showError(errorMessage);
+                            appendToStatusLog(`渲染失败: ${errorMessage}`, new Date(), 'error');
+                        }
+                        renderButton.disabled = false;
+                    }
+                };
+
+                xhr.onerror = function() {
+                    progressContainer.style.display = 'none';
+                    showError('网络错误，请检查连接状态');
+                    renderButton.disabled = false;
+                };
+
+                const formData = new FormData();
+                // 填充表单数据
+                formData.append('hash', currentHash);
+                formData.append('exposure', exposureInput.value);
+                if (inputMode === 'upload' && inputFile) {
+                    formData.append('pbrtFile', inputFile); // 文件字段
+                } else if (inputMode === 'editor' && editorContent.trim()) {
+                    formData.append('pbrtContent', editorContent); // 文本内容
+                }
+                xhr.open('POST', '/v1/debug/render');
+                xhr.send(formData);
+            } catch (err) {
+                progressContainer.style.display = 'none';
+                showError(err.message);
+            }
+        });
+
+        function clearMessages() {
+            errorMessageDiv.style.display = 'none';
+            statusLog.textContent = '';
+
+            // 保持日志区域可见
+            resultSection.style.display = 'block'; 
+
+            pbrtLog.textContent = '';
+            errorMessageDiv.style.display = 'none';
+            warningMessageDiv.style.display = 'none';
+            successMessageDiv.style.display = 'none';
+        }
+
+        function clearMessagesAndImage() {
+            clearMessages();
+        }
+
+        function clearStatusLog() {
+            statusLog.textContent = '';
+        }
+
+        function showError(message) {
+            errorMessageDiv.textContent = message;
+            errorMessageDiv.style.display = 'block';
+        }
+
+        function appendToStatusLog(message, timestamp = new Date(), type = 'info') {
+            const formattedTime = timestamp.toLocaleTimeString();
+            let logEntry = `[${formattedTime}] `;
+            if (type === 'error') {
+                logEntry += `错误: ${message}\n`;
+            } else if (type === 'warning') {
+                logEntry += `警告: ${message}\n`;
+            } else if (type === 'success') {
+                logEntry += `成功: ${message}\n`;
+            } else {
+                logEntry += `${message}\n`;
+            }
+            statusLog.textContent += logEntry;
+            statusLog.scrollTop = statusLog.scrollHeight; // 自动滚动到底部
+
+            // 可以在这里根据 type 添加不同的样式，如果需要高亮显示错误/警告等
+            if (type === 'error') {
+                // 可以添加样式到 statusLog 中的错误行，例如使用 span 或其他方式
+            }
+        }
+        function validateEXRHeader(arrayBuffer) {
+            const header = new Uint8Array(arrayBuffer, 0, 4);
+            // EXR文件头检查 (0x76, 0x2f, 0x31, 0x01)
+            if (header[0] !== 0x76 || header[1] !== 0x2f || 
+                header[2] !== 0x31 || header[3] !== 0x01) {
+                throw new Error('无效的EXR文件头');
+            }
+        }
+
+        // 更新场景函数
+        async function updateScene(blob) {
+            try {
+                const exrData = await blob.arrayBuffer();
+                // 新增调试日志
+                console.log('Received EXR data:', {
+                    size: blob.size,
+                    type: blob.type,
+                    first4Bytes: new Uint8Array(exrData, 0, 4)
+                });
+                console.log("should be (0x76, 0x2f, 0x31, 0x01)");
+                validateEXRHeader(exrData); // 新增校验
+                
+                // 清理旧场景
+                if (scene) {
+                    scene.children.slice().forEach(child => scene.remove(child));
+                    if (currentTexture) currentTexture.dispose();
+                }
+
+                // 加载新纹理
+                const texture = await loadEXRTexture(exrData);
+                currentTexture = texture;
+
+                // 创建新材质
+                material = new THREE.MeshBasicMaterial({ map: texture });
+                const geometry = new THREE.PlaneGeometry(textureAspect, 1);
+                const mesh = new THREE.Mesh(geometry, material);
+                scene.add(mesh);
+
+                // Update camera and renderer
+                renderer.toneMappingExposure = parseFloat(exposureInput.value);
+                updateCameraAndAspect();
+                render();
+
+                resultSection.style.display = 'block';                
+                statusLog.textContent += '渲染成功!\n';
+            } catch (error) {
+                statusLog.textContent += `渲染失败: ${data.error}\n`;
+                showError(`EXR渲染失败: ${error.message}`);
+            } finally {
+                renderButton.disabled = false;
+                statusLog.scrollTop = statusLog.scrollHeight;
+            }
+        }
+
+    </script>
+</body>
+</html>

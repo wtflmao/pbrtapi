@@ -1,0 +1,146 @@
+body {
+    font-family: sans-serif;
+    margin: 20px;
+}
+
+h1, h2 {
+    color: #333;
+}
+
+.input-section, #result-section {
+    margin-bottom: 20px;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+.input-options button {
+    margin-right: 10px;
+    padding: 8px 15px;
+    cursor: pointer;
+}
+
+textarea {
+    width: 100%;
+    height: 200px;
+    margin-top: 10px;
+    padding: 8px;
+    box-sizing: border-box;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+#renderButton {
+    padding: 10px 20px;
+    cursor: pointer;
+}
+
+#image-container {
+    margin-top: 10px;
+    max-width: 800px; /* 限制图片最大宽度 */
+    overflow-x: auto; /* 水平滚动条，如果图片超出容器宽度 */
+    border: 1px solid #ccc; /* 可选：添加边框，便于查看图片范围 */
+}
+
+#renderedImage {
+    max-width: 100%; /* 图片宽度不超过容器 */
+    display: block; /* 移除图片底部默认间隙 */
+}
+
+#render-log {
+    margin-top: 10px;
+    font-family: monospace;
+    white-space: pre-wrap; /* 保留空格和换行 */
+    background-color: #f8f8f8;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    max-height: 200px; /* 最大高度，超出显示滚动条 */
+    overflow-y: auto;
+}
+
+.error {
+    color: red;
+    margin-top: 10px;
+}
+.warning {
+    color: orange;
+    margin-top: 10px;
+}
+.success {
+    color: green;
+    margin-top: 10px;
+}
+
+#status-log-section {
+    margin-top: 30px;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    z-index: 1;  /* 新增层级设定 */
+    position: relative;  /* 重要：必须设置定位属性才能触发z-index生效 */
+    /*margin-top: calc(100vh - 150px);  /* 新增 */
+    background: rgba(255,255,255,0.9);  /* 透明背景防止遮挡 */
+    max-width: 80%;     /* 限制日志框宽度 */
+
+}
+
+#status-log {
+    margin-top: 10px;
+    font-family: monospace;
+    white-space: pre-wrap;
+    background-color: #f0f0f0; /* 稍微不同的背景色与PBRT log区分 */
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    max-height: 150px; /* 可以设置较小的高度，突出状态日志 */
+    overflow-y: auto;
+    font-size: 12px; /* 可以设置更小的字体 */
+}
+
+#three-container {
+    position: relative;
+    width: 100%;
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+
+#three-canvas {
+    width: 100% !important;
+    height: auto !important;
+    display: block;
+}
+
+.aspect-wrapper {
+    position: relative;
+    width: 100%;
+    height: 0;
+}
+
+/* 进度条样式 */
+.progress-container {
+    margin: 20px auto;
+    width: 80%;
+    max-width: 400px;
+}
+
+.progress-bar {
+    height: 15px;
+    background: #444;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: #00c853;
+    width: 0;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    text-align: center;
+    margin-top: 8px;
+    color: #888;
+    font-size: 0.9em;
+}
