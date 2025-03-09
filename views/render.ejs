@@ -57,19 +57,11 @@
     <!-- three.js 依赖 -->
     <script async src="https://unpkg.com/es-module-shims@2.0.10/dist/es-module-shims.js"></script>
     
-    <script type="importmap">
-    {
-        "imports": {
-            "three": "https://unpkg.com/three@0.174.0/build/three.module.js",
-            "three/addons/": "https://unpkg.com/three@0.174.0/examples/jsm/"
-        }
-    }
-    </script>
+    
 
     <script type="module">
-        import * as THREE from 'three';
-        import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
-
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.174.0/+esm';
+        import { EXRLoader } from 'https://cdn.jsdelivr.net/npm/three@0.174.0/examples/jsm/loaders/EXRLoader.js/+esm';
         // 新增：哈希计算队列
         let hashingQueue = Promise.resolve();
         let currentHash = '';
@@ -107,21 +99,35 @@
         }
 
         // 修改loadEXRTexture函数
-        async function loadEXRTexture(arrayBuffer) {
+        async function loadEXRTexture(exrData) {
+            console.log('loadEXRTexture 函数开始执行');
             return new Promise((resolve, reject) => {
-                const loader = new EXRLoader();
-                loader.parse(arrayBuffer, (texture) => {
-                    if (!texture?.image) {
-                        reject(new Error('无效的EXR文件格式'));
-                        return;
+                console.log('创建 EXRLoader 实例');
+                const loader = new EXRLoader(); // 创建 loader 实例
+                console.log('EXRLoader 实例创建完成', loader); // 打印 loader 实例
+
+                const blob = new Blob([exrData], { type: 'image/x-exr' });
+                console.log('Blob 创建完成', blob); // 打印 Blob 对象
+                const blobURL = URL.createObjectURL(blob);
+                console.log('Blob URL 创建完成', blobURL); // 打印 Blob URL
+
+                loader.load(
+                    blobURL,
+                    function (texture) {
+                        console.log('EXRLoader 加载成功回调', texture); // 打印纹理对象
+                        URL.revokeObjectURL(blobURL); // 释放 Blob URL
+                        resolve(texture);
+                    },
+                    function (xhr) { // 修改为 xhr 参数，并添加日志
+                        //console.log('EXRLoader 加载进度:', xhr); // 打印 xhr 对象
+                    },
+                    function (error) {
+                        console.error('EXRLoader 加载错误回调:', error);
+                        URL.revokeObjectURL(blobURL); // 释放 Blob URL
+                        reject(error);
                     }
-                    // Store aspect ratio for later use
-                    textureAspect = texture.image.width / texture.image.height;
-                    updateCameraAndAspect();
-                    resolve(texture);
-                }, (e)=>{}, error => { // 提供第三个error callback。
-                    reject(new Error(`EXR加载失败: ${error.message}`));
-                });
+                );
+                console.log('EXRLoader.load 调用完成');
             });
         }
 
@@ -130,15 +136,16 @@
 
             // 容器宽高
             const container = document.getElementById('three-container');
-            const containerWidth = container.clientWidth;
-            const containerHeight = containerWidth / textureAspect;
-            container.style.width = `${containerWidth}px`; // 明确设置宽
-            container.style.height = `${containerHeight}px`; // 明确设置高
 
             // 设置外层容器比例
             container.style.aspectRatio = `${textureAspect}`;
-            
-           // 在 updateCameraAndAspect 函数中，修改相机参数逻辑：
+
+            // 使用 getBoundingClientRect() 获取更准确的尺寸
+            const rect = container.getBoundingClientRect();
+            const containerWidth = rect.width;
+            const containerHeight = rect.height;
+
+            // 在 updateCameraAndAspect 函数中，修改相机参数逻辑：
             camera.left = -0.5 * textureAspect; // 根据宽高比调整左右范围
             camera.right = 0.5 * textureAspect;
             camera.top = 0.5;
@@ -173,11 +180,20 @@
 
         // 初始化Three.js场景
         function initThreeScene() {
-            renderer = new THREE.WebGLRenderer({
-                antialias: true,
-                canvas: document.querySelector('#three-canvas'),
-                alpha: true // 允许透明背景
-            });
+            console.log('initThree 函数开始执行');
+
+            const container = document.getElementById('three-container');
+            const canvas = document.getElementById('three-canvas');
+
+            // 获取 aspect-wrapper 的尺寸
+            const aspectWrapper = container.parentElement; // 获取父元素 aspect-wrapper
+
+            // 设置 three-container 和 three-canvas 的尺寸
+            canvas.style.width = `100%`;     // 设置 canvas 宽度
+            canvas.style.height = `100%`;    // 设置 canvas 高度
+
+            renderer = new THREE.WebGLRenderer({ canvas: canvas });
+            renderer.setPixelRatio(window.devicePixelRatio);
 
             // 使用更现代的色调映射算法
             //renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -185,10 +201,12 @@
             
             renderer.toneMappingExposure = parseFloat(document.getElementById('exposureInput').value);
             renderer.setClearColor(0x000000, 0);
-            
+
             scene = new THREE.Scene();
             camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0, 1);
-            
+            //camera = new THREE.PerspectiveCamera(75, wrapperWidth / wrapperHeight, 0.1, 1000); // 使用 aspect-wrapper 的宽高比
+            camera.position.z = 0.5;
+
             // 初始化全屏适配
             window.addEventListener('resize', updateCameraAndAspect);
         }
@@ -285,147 +303,57 @@
             clearMessages();
             statusLog.textContent = '开始处理...\n';
 
-            const xhr = new XMLHttpRequest();
+            let newHash = '';
+            if (inputMode === 'upload' && inputFile) {
+                newHash = await calculateFileHash(inputFile);
+            } else if (inputMode === 'editor' && editorContent.trim()) {
+                newHash = await calculateTextHash(editorContent);
+            } else {
+                showError('请选择有效的输入方式');
+                return;
+            }
+
+            currentHash = newHash;
+            statusLog.textContent += `输入内容哈希值: ${currentHash}\n`;
+
+            if (currentHash === cachedHash && currentExrBlob) {
+                statusLog.textContent += '检测到相同场景，使用缓存EXR\n';
+                await updateScene(currentExrBlob);
+                render(); // 手动触发渲染
+                resultSection.style.display = 'block';
+                return;
+            }
+
+            // 清空旧缓存
+            if (cachedHash && currentHash !== cachedHash) {
+                URL.revokeObjectURL(currentExrBlob);
+                currentExrBlob = null;
+                cachedHash = '';
+                statusLog.textContent += '场景有变化，清空旧缓存\n';
+            }
+
+            // 显示进度条
+            progressContainer.style.display = 'block';
+            progressFill.style.width = '0%';
+            progressText.textContent = '准备中...';
+
+            // 模拟渲染进度 (在上传完成后开始)
+            let renderProgress = 0;
+            let renderInterval = null;
+            const simulateRenderProgress = () => {
+                renderInterval = setInterval(() => {
+                    renderProgress += 5; // 每次增加 5% 进度，可以调整
+                    if (renderProgress > 99) {
+                        renderProgress = 99; // 避免直接跳到100%，留给下载
+                        clearInterval(renderInterval);
+                    }
+                    progressFill.style.width = `${renderProgress}%`;
+                    progressText.textContent = `后端渲染中 ${renderProgress}%`;
+                }, 200); // 每 200 毫秒更新一次，可以调整
+            };
+
+
             try {
-                xhr.responseType = 'json';
-
-                // 新增：速度计算变量
-                let lastLoaded = 0;
-                let lastTime = Date.now();
-
-                // 计算哈希
-                let newHash = '';
-                if (inputMode === 'upload' && inputFile) {
-                    newHash = await calculateFileHash(inputFile);
-                } else if (inputMode === 'editor' && editorContent.trim()) {
-                    newHash = await calculateTextHash(editorContent);
-                } else {
-                    showError('请选择有效的输入方式');
-                    return;
-                }
-
-                currentHash = newHash;
-                statusLog.textContent += `输入内容哈希值: ${currentHash}\n`;
-
-                if (currentHash === cachedHash && currentExrBlob) {
-                    statusLog.textContent += '检测到相同场景，使用缓存EXR\n';
-                    await updateScene(currentExrBlob);
-                    render(); // 手动触发渲染
-                    resultSection.style.display = 'block';
-                    return;
-                }
-
-                // 清空旧缓存
-                if (cachedHash && currentHash !== cachedHash) {
-                    URL.revokeObjectURL(currentExrBlob);
-                    currentExrBlob = null;
-                    cachedHash = '';
-                    statusLog.textContent += '场景有变化，清空旧缓存\n';
-                }
-                
-                // 显示进度条
-                progressContainer.style.display = 'block';
-                progressFill.style.width = '0%';
-                progressText.textContent = '准备中...';
-
-                // 模拟渲染进度 (在上传完成后开始)
-                let renderProgress = 0;
-                let renderInterval = null;
-                const simulateRenderProgress = () => {
-                    renderInterval = setInterval(() => {
-                        renderProgress += 5; // 每次增加 5% 进度，可以调整
-                        if (renderProgress > 99) {
-                            renderProgress = 99; // 避免直接跳到100%，留给下载
-                            clearInterval(renderInterval);
-                        }
-                        progressFill.style.width = `${renderProgress}%`;
-                        progressText.textContent = `后端渲染中 ${renderProgress}%`;
-                    }, 200); // 每 200 毫秒更新一次，可以调整
-                };
-
-                // 上传进度
-                xhr.upload.addEventListener('progress', e => {
-                    if (e.lengthComputable) {
-                        const percent = (e.loaded / e.total) * 100;
-                        const now = Date.now();
-                        const speed = ((e.loaded - lastLoaded) / (now - lastTime)) * 1000; // 字节/秒
-                        lastLoaded = e.loaded;
-                        lastTime = now;
-
-                        progressFill.style.width = `${percent}%`;
-                        progressText.textContent = `上传 ${Math.round(percent)}% (${(speed / 1024 / 1024).toFixed(2)}MB/s)`;
-                        if (percent === 100) {
-                            progressText.textContent = '上传完成，等待后端渲染...'; // 上传完成后修改文字
-                            simulateRenderProgress(); // 添加模拟进度调用
-                        }
-                    }
-                });
-
-                // 下载进度
-                xhr.addEventListener('progress', e => {
-                    clearInterval(renderInterval); // 如果开始下载，清除渲染模拟
-                    if (e.lengthComputable) {
-                        const percent = (e.loaded / e.total) * 100;
-                        const now = Date.now();
-                        const speed = ((e.loaded - lastLoaded) / (now - lastTime)) * 1000; // 字节/秒
-                        lastLoaded = e.loaded;
-                        lastTime = now;
-
-                        progressFill.style.width = `${percent}%`;
-                        progressText.textContent = `下载 ${Math.round(percent)}% (${(speed / 1024 / 1024).toFixed(2)}MB/s)`;
-                    }
-                });
-                xhr.onreadystatechange = async function() {
-                    if (xhr.readyState === XMLHttpRequest.DONE) {
-                        progressContainer.style.display = 'none';
-                        if (xhr.status === 200) {
-                            try {
-                                const response = xhr.response;
-                                if (response.status !== 'success') {
-                                    throw new Error(response.error || '未知错误');
-                                }
-
-                                // Base64解码
-                                const raw = atob(response.exrData);
-                                const buffer = new Uint8Array(raw.length);
-                                for (let i = 0; i < raw.length; i++) {
-                                    buffer[i] = raw.charCodeAt(i);
-                                }
-
-                                currentExrBlob = new Blob([buffer], {type: 'image/x-exr'});
-                                cachedHash = currentHash;
-                                await updateScene(currentExrBlob);
-                                
-                                resultSection.style.display = 'block';
-                                appendToStatusLog(response.message);
-                            } catch (error) {
-                                console.error('处理响应出错:', error);
-                                showError(`处理渲染结果失败: ${error.message}`);
-                                appendToStatusLog(`处理错误: ${error.message}`, new Date(), 'error');
-                            }
-                        } else { 
-                            // 新的错误处理逻辑
-                            let errorMessage = `HTTP ${xhr.status} 错误`;
-                            try {
-                                if (xhr.response && xhr.response.error) { // 直接检查
-                                    errorMessage = xhr.response.error;
-                                }
-                            } catch (e) {
-                                console.warn('解析错误信息失败:', e);
-                            }
-                            showError(errorMessage);
-                            appendToStatusLog(`渲染失败: ${errorMessage}`, new Date(), 'error');
-                        }
-                        renderButton.disabled = false;
-                    }
-                };
-
-                xhr.onerror = function() {
-                    progressContainer.style.display = 'none';
-                    showError('网络错误，请检查连接状态');
-                    renderButton.disabled = false;
-                };
-
                 const formData = new FormData();
                 // 填充表单数据
                 formData.append('hash', currentHash);
@@ -435,11 +363,76 @@
                 } else if (inputMode === 'editor' && editorContent.trim()) {
                     formData.append('pbrtContent', editorContent); // 文本内容
                 }
-                xhr.open('POST', '/v1/debug/render');
-                xhr.send(formData);
-            } catch (err) {
+
+                const response = await fetch('/v1/debug/render', {
+                    method: 'POST',
+                    body: formData,
+                    // fetch API 默认不发送 content-length，由浏览器自动处理
+                });
+
+                if (!response.ok) {
+                    let errorMessage = `HTTP ${response.status} 错误`;
+                    try {
+                        const errorJson = await response.json();
+                        if (errorJson && errorJson.error) {
+                            errorMessage = errorJson.error;
+                        }
+                    } catch (e) {
+                        console.warn('解析错误信息失败:', e);
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                // 开始读取响应体并显示下载进度
+                const reader = response.body.getReader();
+                const contentLength = response.headers.get('Content-Length');
+                let receivedLength = 0;
+                let chunks = [];
+                let lastTime = Date.now();
+                let lastLoaded = 0;
+                clearInterval(renderInterval); // 清除模拟渲染进度
+
+                progressFill.style.width = '0%'; // 重置进度条
+                progressText.textContent = '下载中 0%';
+
+                while(true) {
+                    const {done, value} = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    chunks.push(value);
+                    receivedLength += value.length;
+
+                    if (contentLength) {
+                        const percent = (receivedLength / contentLength) * 100;
+                        const now = Date.now();
+                        const speed = ((receivedLength - lastLoaded) / (now - lastTime)) * 1000;
+                        lastLoaded = receivedLength;
+                        lastTime = now;
+                        progressFill.style.width = `${percent}%`;
+                        progressText.textContent = `下载 ${percent.toFixed(1)}% (${(speed / 1024 / 1024).toFixed(2)}MB/s)`;
+                    } else {
+                        progressText.textContent = `下载中... ${receivedLength} bytes`;
+                    }
+                }
+
+                const exrBlob = new Blob(chunks, {type: 'image/x-exr'});
+                cachedHash = currentHash;
+                currentExrBlob = exrBlob;
+                await updateScene(exrBlob);
+
+                resultSection.style.display = 'block';
+                appendToStatusLog('渲染成功!');
+
+
+            } catch (error) {
                 progressContainer.style.display = 'none';
-                showError(err.message);
+                showError(`渲染失败: ${error.message}`);
+                appendToStatusLog(`渲染错误: ${error.message}`, new Date(), 'error');
+            } finally {
+                renderButton.disabled = false;
+                progressContainer.style.display = 'none'; // 确保在完成或失败后隐藏进度条
+                console.log('fetch 请求 finally 代码块执行'); // 添加日志
             }
         });
 
@@ -500,6 +493,7 @@
 
         // 更新场景函数
         async function updateScene(blob) {
+            console.log('updateScene 函数开始执行', blob); // 添加日志
             try {
                 const exrData = await blob.arrayBuffer();
                 // 新增调试日志
@@ -518,28 +512,34 @@
                 }
 
                 // 加载新纹理
+                console.log('准备加载 EXR 纹理'); // **新增日志：在调用 loadEXRTexture 前**
                 const texture = await loadEXRTexture(exrData);
                 currentTexture = texture;
+                console.log('EXR 纹理加载完成', texture); // 添加日志
 
                 // 创建新材质
                 material = new THREE.MeshBasicMaterial({ map: texture });
                 const geometry = new THREE.PlaneGeometry(textureAspect, 1);
                 const mesh = new THREE.Mesh(geometry, material);
                 scene.add(mesh);
+                console.log('网格和材质添加到场景'); // 添加日志
 
                 // Update camera and renderer
                 renderer.toneMappingExposure = parseFloat(exposureInput.value);
                 updateCameraAndAspect();
                 render();
+                console.log('场景渲染完成'); // 添加日志
 
                 resultSection.style.display = 'block';                
                 statusLog.textContent += '渲染成功!\n';
             } catch (error) {
-                statusLog.textContent += `渲染失败: ${data.error}\n`;
+                statusLog.textContent += `渲染失败: ${error}\n`;
                 showError(`EXR渲染失败: ${error.message}`);
+                console.error('updateScene 函数发生错误:', error); // 详细错误日志
             } finally {
                 renderButton.disabled = false;
                 statusLog.scrollTop = statusLog.scrollHeight;
+                console.log('updateScene 函数 finally 代码块执行'); // 添加日志
             }
         }
 

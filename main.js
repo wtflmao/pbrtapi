@@ -10,6 +10,9 @@ const os = require('os'); // 引入 os 模块
 const app = express();
 const port = 8001;
 
+// 配置静态文件服务，将 public 目录设置为静态资源根目录
+app.use(express.static(path.join(__dirname, 'public')));
+
 // 设置 EJS 为模板引擎
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
@@ -31,9 +34,6 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
 }
-
-// 静态资源服务
-app.use(express.static(path.join(__dirname, 'public')));
 
 // 新增缓存目录配置
 const cacheDir = path.join(__dirname, 'exr_cache');
@@ -195,15 +195,13 @@ app.post('/v1/debug/render', upload.single('pbrtFile'), async (req, res) => {
         if (fs.existsSync(outputExrPath)) {
             // 读取EXR文件并转换为base64
             const exrData = fs.readFileSync(outputExrPath);
-            const base64Data = exrData.toString('base64');
             // 保存到缓存
             fs.writeFileSync(cachePath, exrData);
 
-            res.json({
-                status: 'success',
-                exrData: base64Data,
-                message: '渲染成功'
-            });
+            res.setHeader('Content-Type', 'image/x-exr')
+                .setHeader('Content-Length', exrData.length)
+                .setHeader('X-Cache', 'MISS')
+                .send(exrData);
         } else {
             console.warn(`Warning: outputExrPath does not exists when trying to render: ${outputExrPath}`);
             // 增加容错返回
