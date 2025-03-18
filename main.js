@@ -7,9 +7,17 @@ const fs = require('fs');
 const uuid = require('uuid');
 const os = require('os'); // 引入 os 模块
 const AdmZip = require('adm-zip');
+const unrar = require('unrar-promise');
+
+// 引入配置文件
+const settings = require('./settings.json');
 
 const app = express();
 const port = 8001;
+
+// 设置请求大小限制为1GB
+app.use(express.json({limit: '1gb'}));
+app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
 // 配置静态文件服务，将 public 目录设置为静态资源根目录
 app.use(express.static(path.join(__dirname, 'public')));
@@ -54,10 +62,6 @@ const cleanupInterval = setInterval(() => {
         }
     });
 }, 24 * 3600 * 1000);
-
-// body-parser 中间件
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 // 模型存储相关配置
 const MODELS_DIR = '/home/pog/pbrtapi/uploads/models';
@@ -109,14 +113,16 @@ const modelStorage = multer.diskStorage({
 
 const uploadModel = multer({ 
     storage: modelStorage,
+    limits: {
+        fileSize: 1024 * 1024 * 1024 // 1GB
+    },
     fileFilter: function (req, file, cb) {
-        // 允许上传的文件类型
-        const allowedTypes = ['.glb', '.gltf', '.obj', '.fbx', '.zip', '.blend', '.3ds', '.max', '.ply', '.pbrt'];
+        // 使用配置文件中的支持的文件类型
         const ext = path.extname(file.originalname).toLowerCase();
-        if (allowedTypes.includes(ext)) {
+        if (settings.supportedModelExtensions.includes(ext)) {
             cb(null, true);
         } else {
-            cb(new Error(`不支持的文件类型，支持的文件类型有 ${allowedTypes.join(', ')}`));
+            cb(new Error(`不支持的文件类型，支持的文件类型有 ${settings.supportedModelExtensions.join(', ')}`));
         }
     }
 });
@@ -414,15 +420,46 @@ function validateModelPath(modelDir, modelPath) {
     return true;
 }
 
-/**
- * @route POST /v1/model
- * @description 上传新模型
- * @param {file} model - 要上传的模型文件（支持单个模型文件或ZIP压缩包）
- * @param {Object} info - 模型的元信息（JSON格式）
- * @returns {Object} 上传成功的模型信息
- * @throws {400} 模型信息不完整时
- * @throws {500} 上传模型失败时
- */
+// 修改 cleanupFiles 函数来修复目录清理的 bug
+function cleanupFiles(dir, relativePath = '') {
+    const files = fs.readdirSync(dir);
+    let hasValidContent = false; // 用于跟踪目录是否包含有效内容
+
+    for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const relPath = path.join(relativePath, file);
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+            // 如果是 texture 目录，标记为有效内容并跳过
+            if (file.toLowerCase() === 'texture' || file.toLowerCase() === 'textures') {
+                hasValidContent = true;
+                continue;
+            }
+            // 递归处理子目录，并获取子目录的处理结果
+            const subDirHasContent = cleanupFiles(fullPath, relPath);
+            // 如果子目录有有效内容，当前目录也标记为有有效内容
+            if (subDirHasContent) {
+                hasValidContent = true;
+            } else {
+                // 如果子目录没有有效内容，删除它
+                fs.rmdirSync(fullPath);
+            }
+        } else {
+            // 检查文件扩展名
+            const ext = path.extname(file).toLowerCase();
+            if (settings.keepFileExtensions.includes(ext)) {
+                hasValidContent = true;
+            } else {
+                fs.unlinkSync(fullPath);
+            }
+        }
+    }
+
+    return hasValidContent;
+}
+
+// 修改模型上传处理部分，添加 RAR 支持
 app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
     const modelDir = req.file ? path.dirname(req.file.path) : null;
     let needCleanup = true;
@@ -435,15 +472,19 @@ app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
         const fileExt = path.extname(req.file.originalname).toLowerCase();
         let modelInfo;
 
-        if (fileExt === '.zip') {
-            // 处理zip文件
+        if (fileExt === '.zip' || fileExt === '.rar') {
+            // 处理压缩文件
             try {
-                const zip = new AdmZip(req.file.path);
+                if (fileExt === '.zip') {
+                    // 处理 ZIP 文件
+                    const zip = new AdmZip(req.file.path);
+                    zip.extractAllTo(modelDir, true);
+                } else {
+                    // 处理 RAR 文件
+                    await unrar.extract(req.file.path, modelDir);
+                }
                 
-                // 解压文件
-                zip.extractAllTo(modelDir, true);  // true 表示覆盖已存在的文件
-                
-                // 删除zip文件
+                // 删除压缩文件
                 fs.unlinkSync(req.file.path);
 
                 // 首先尝试使用网页编辑器提供的info.json
@@ -465,59 +506,7 @@ app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
                 }
 
                 // 递归查找模型文件
-                const allowedExts = ['.glb', '.gltf', '.obj', '.fbx', '.blend', '.3ds', '.max', '.ply', '.pbrt'];
-                const keepExts = [...allowedExts, '.mtl', '.jpg', '.jpeg', '.png', '.gif', '.exr', '.webp', '.bmp', '.json', '.gz', '.spd', '.csv'];
-                let modelFiles = [];
-
-                function findModelFilesRecursively(dir, relativePath = '') {
-                    const files = fs.readdirSync(dir);
-                    for (const file of files) {
-                        const fullPath = path.join(dir, file);
-                        const relPath = path.join(relativePath, file);
-                        const stat = fs.statSync(fullPath);
-
-                        if (stat.isDirectory()) {
-                            // 如果是目录，递归查找
-                            findModelFilesRecursively(fullPath, relPath);
-                        } else if (allowedExts.includes(path.extname(file).toLowerCase())) {
-                            // 如果是模型文件，添加到列表
-                            modelFiles.push(relPath);
-                        }
-                    }
-                }
-
-                // 清理无关文件
-                function cleanupFiles(dir, relativePath = '') {
-                    const files = fs.readdirSync(dir);
-                    for (const file of files) {
-                        const fullPath = path.join(dir, file);
-                        const relPath = path.join(relativePath, file);
-                        const stat = fs.statSync(fullPath);
-
-                        if (stat.isDirectory()) {
-                            if (file.toLowerCase() === 'texture' || file.toLowerCase() === 'textures') {
-                                // 保留texture目录下的所有文件
-                                continue;
-                            }
-                            // 递归处理子目录
-                            cleanupFiles(fullPath, relPath);
-                            // 如果目录为空，删除目录
-                            if (fs.readdirSync(fullPath).length === 0) {
-                                fs.rmdirSync(fullPath);
-                            }
-                        } else {
-                            // 检查文件扩展名
-                            const ext = path.extname(file).toLowerCase();
-                            if (!keepExts.includes(ext)) {
-                                // 删除不在保留列表中的文件
-                                fs.unlinkSync(fullPath);
-                            }
-                        }
-                    }
-                }
-
-                // 先查找所有模型文件
-                findModelFilesRecursively(modelDir);
+                const modelFiles = findModelFilesRecursively(modelDir);
                 
                 // 清理无关文件
                 cleanupFiles(modelDir);
@@ -555,7 +544,7 @@ app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
                 }
 
             } catch (error) {
-                throw new Error(`处理ZIP文件失败: ${error.message}`);
+                throw new Error(`处理${fileExt === '.zip' ? 'ZIP' : 'RAR'}文件失败: ${error.message}`);
             }
         } else {
             // 处理单个模型文件
@@ -563,6 +552,21 @@ app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
                 modelInfo = JSON.parse(req.body.info || '{}');
             } catch (e) {
                 modelInfo = {};
+            }
+            
+            // 对 OBJ 文件增加特殊处理
+            if (path.extname(req.file.originalname).toLowerCase() === '.obj') {
+                // 检查同目录是否存在对应的 MTL 文件
+                const objFileName = req.file.originalname;
+                const mtlFileName = path.basename(objFileName, '.obj') + '.mtl';
+                const mtlPath = path.join(modelDir, mtlFileName);
+                
+                if (!fs.existsSync(mtlPath)) {
+                    // 删除已上传的文件
+                    fs.unlinkSync(req.file.path);
+                    
+                    throw new Error('OBJ 文件必须与 MTL 文件一起打包上传。请将 OBJ 和 MTL 文件打包成 ZIP 压缩包后再上传。');
+                }
             }
             
             // 使用目录名作为UUID
@@ -633,6 +637,29 @@ app.post('/v1/model', uploadModel.single('model'), async (req, res) => {
     }
 });
 
+// 在模型上传处理中使用配置文件中的保留文件类型
+function findModelFilesRecursively(dir, relativePath = '') {
+    const files = fs.readdirSync(dir);
+    const modelFiles = [];
+    const allowedExts = settings.supportedModelExtensions.filter(ext => ext !== '.zip');
+
+    for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const relPath = path.join(relativePath, file);
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+            // 如果是目录，递归查找
+            modelFiles.push(...findModelFilesRecursively(fullPath, relPath));
+        } else if (allowedExts.includes(path.extname(file).toLowerCase())) {
+            // 如果是模型文件，添加到列表
+            modelFiles.push(relPath);
+        }
+    }
+
+    return modelFiles;
+}
+
 /**
  * @route DELETE /v1/model/:uuid
  * @description 删除指定的模型
@@ -662,6 +689,21 @@ app.delete('/v1/model/:uuid', (req, res) => {
 // GET /debug/models - 模型管理调试页面
 app.get('/debug/models', (req, res) => {
     res.render('debug-models');
+});
+
+// 添加错误处理中间件
+app.use((error, req, res, next) => {
+    if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({
+                error: '文件大小超过限制（最大1GB）'
+            });
+        }
+        return res.status(400).json({
+            error: `文件上传错误: ${error.message}`
+        });
+    }
+    next(error);
 });
 
 app.listen(port, () => {

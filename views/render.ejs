@@ -423,7 +423,7 @@
                 appendToStatusLog(`渲染错误: ${error.message}`, new Date(), 'error');
             } finally {
                 renderButton.disabled = false;
-                // progressContainer.style.display = 'none'; // 不再隐藏，而是更新文本 // 注释掉
+                progressContainer.style.display = 'none'; // 不再隐藏，而是更新文本 // 注释掉
                 progressText.textContent = '下载完成'; // 更新进度条文本
                 console.log('fetch 请求 finally 代码块执行'); // 添加日志
                 console.log('fetch 请求 finally 代码块执行'); // 添加日志

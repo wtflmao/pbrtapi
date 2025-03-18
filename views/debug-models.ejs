@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>模型管理调试页面</title>
+    <link rel="stylesheet" href="/css/debug-models.css">
+</head>
+<body>
+    <div class="container">
+        <div class="models-list">
+            <h2>
+                模型列表 
+                <button id="refreshModelsBtn" style="margin-left: 10px;">🔄 刷新</button>
+            </h2>
+            <div id="modelsList"></div>
+        </div>
+        
+        <div class="right-section">
+            <div class="log-section">
+                <h2>日志台</h2>
+                <div id="logContainer"></div>
+            </div>
+
+            <div class="upload-section">
+                <h2>上传模型</h2>
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <input type="file" id="modelFile" name="model" accept=".zip,.obj,.glb,.gltf,.fbx,.3ds,.max,.ply,.pbrt">
+                    <div id="infoJsonEditor" style="display: none;">
+                        <h3>编辑 info.json</h3>
+                        <textarea id="infoJsonContent"></textarea>
+                    </div>
+                    <button type="submit">上传模型</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="delete-section">
+        <h2>删除模型</h2>
+        <form id="deleteModelForm">
+            <input type="text" id="deleteModelUuid" placeholder="输入模型UUID" required>
+            <button type="submit">删除模型</button>
+        </form>
+    </div>
+
+    <!-- 添加上传进度弹框 -->
+    <div id="uploadProgress" class="upload-progress">
+        <div class="upload-progress-content">
+            <h3>文件上传中</h3>
+            <div class="progress-bar-container">
+                <div id="progressBar" class="progress-bar"></div>
+            </div>
+            <div id="progressText">0%</div>
+            <div id="uploadSpeed">0 MB/s</div>
+        </div>
+    </div>
+
+    <script>
+        const modelFileInput = document.getElementById('modelFile');
+        const uploadForm = document.getElementById('uploadForm');
+        const deleteModelForm = document.getElementById('deleteModelForm');
+        const deleteModelUuid = document.getElementById('deleteModelUuid');
+        const modelsList = document.getElementById('modelsList');
+        const infoJsonEditor = document.getElementById('infoJsonEditor');
+        const infoJsonContent = document.getElementById('infoJsonContent');
+        const logContainer = document.getElementById('logContainer');
+        const refreshModelsBtn = document.getElementById('refreshModelsBtn');
+        const uploadProgress = document.getElementById('uploadProgress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const uploadSpeed = document.getElementById('uploadSpeed');
+
+        function log(message, type = 'info') {
+            const logEntry = document.createElement('div');
+            logEntry.textContent = `[${new Date().toLocaleString()}] ${message}`;
+            logEntry.classList.add(type);
+            logContainer.prepend(logEntry);
+        }
+
+        function formatSpeed(bytesPerSecond) {
+            if (bytesPerSecond < 1024) {
+                return `${bytesPerSecond.toFixed(1)} B/s`;
+            } else if (bytesPerSecond < 1024 * 1024) {
+                return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+            } else {
+                return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+            }
+        }
+
+        function fetchModels() {
+            fetch('/v1/model')
+                .then(response => response.json())
+                .then(models => {
+                    modelsList.innerHTML = '';
+                    models.forEach(model => {
+                        const modelDiv = document.createElement('div');
+                        modelDiv.innerHTML = `
+                            <pre>${JSON.stringify(model, null, 2)}</pre>
+                        `;
+                        modelsList.appendChild(modelDiv);
+                    });
+                    log(`获取模型列表成功，共 ${models.length} 个模型`);
+                })
+                .catch(error => {
+                    log(`获取模型列表失败: ${error.message}`, 'error');
+                });
+        }
+
+        function deleteModel(uuid) {
+            fetch(`/v1/model/${uuid}`, { method: 'DELETE' })
+                .then(response => {
+                    if (!response.ok) throw new Error('删除失败');
+                    log(`模型 ${uuid} 删除成功`, 'success');
+                    fetchModels();
+                })
+                .catch(error => {
+                    log(`删除模型失败: ${error.message}`, 'error');
+                });
+        }
+
+        deleteModelForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const uuid = deleteModelUuid.value.trim();
+            
+            if (!uuid) {
+                log('请输入模型UUID', 'error');
+                return;
+            }
+
+            deleteModel(uuid);
+            deleteModelUuid.value = ''; // 清空输入框
+        });
+
+        modelFileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const ext = file.name.split('.').pop().toLowerCase();
+            
+            if (['obj', 'glb', 'gltf', 'fbx', '3ds', 'max', 'ply', 'pbrt', 'zip'].includes(ext)) {
+                // 生成一个全局的 UUID，在整个上传过程中保持一致
+                const consistentUuid = crypto.randomUUID();
+                const name = file.name.split('.')[0] === "" ? (file.name.split('.')[1] ? file.name.split('.')[1] : file.name) : file.name.split('.')[0];
+                const defaultInfoJson = JSON.stringify({
+                    name: name,
+                    type: 'satellite',
+                    en_US: {
+                        name: name,
+                        description: 'This is a satellite model',
+                    },
+                    zh_CN: {
+                        name: name,
+                        description: '这是一个卫星模型',
+                    }
+                }, null, 2);
+                
+                // 将 UUID 存储在一个全局变量中，以便在提交时使用
+                window.generatedModelUuid = consistentUuid;
+                infoJsonContent.value = defaultInfoJson;
+                infoJsonEditor.style.display = 'block';
+            } else {
+                infoJsonEditor.style.display = 'none';
+                window.generatedModelUuid = null;
+            }
+        });
+
+        uploadForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData();
+            const modelFile = modelFileInput.files[0];
+            
+            if (!modelFile) {
+                log('请选择要上传的文件', 'error');
+                return;
+            }
+
+            formData.append('model', modelFile);
+            
+            if (infoJsonEditor.style.display !== 'none') {
+                try {
+                    const infoJson = JSON.parse(infoJsonContent.value);
+                    
+                    // 检查用户是否修改了 UUID
+                    // 如果用户输入的 UUID 与生成的 UUID 不同，则使用用户输入的 UUID
+                    if (window.generatedModelUuid && infoJson.uuid !== window.generatedModelUuid) {
+                        // 用户修改了 UUID，使用用户输入的 UUID
+                        log('使用用户自定义的 UUID', 'info');
+                    } else {
+                        // 使用生成的 UUID
+                        infoJson.uuid = window.generatedModelUuid;
+                    }
+                    
+                    // 只有非zip文件才设置model_path
+                    const ext = modelFile.name.split('.').pop().toLowerCase();
+                    if (ext !== 'zip') {
+                        infoJson.model_path = modelFile.name;
+                    }
+                    formData.append('info', JSON.stringify(infoJson));
+                } catch (error) {
+                    log(`info.json 解析错误: ${error.message}`, 'error');
+                    return;
+                }
+            }
+
+            // 显示进度条
+            uploadProgress.style.display = 'flex';
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
+            uploadSpeed.textContent = '0 MB/s';
+
+            const xhr = new XMLHttpRequest();
+            let startTime = Date.now();
+            let lastLoaded = 0;
+
+            xhr.upload.addEventListener('progress', function(e) {
+                if (e.lengthComputable) {
+                    const currentTime = Date.now();
+                    const timeElapsed = (currentTime - startTime) / 1000; // 转换为秒
+                    const bytesPerSecond = (e.loaded - lastLoaded) / timeElapsed;
+                    
+                    const percent = (e.loaded / e.total * 100).toFixed(1);
+                    progressBar.style.width = percent + '%';
+                    progressText.textContent = percent + '%';
+                    uploadSpeed.textContent = formatSpeed(bytesPerSecond);
+
+                    // 更新上次加载的字节数和开始时间
+                    lastLoaded = e.loaded;
+                    startTime = currentTime;
+                }
+            });
+
+            xhr.addEventListener('load', function() {
+                // 记录上传完成的时间
+                const uploadCompleteTime = Date.now();
+
+                // 计算距离上传开始的时间
+                const hideProgressBar = () => {
+                    uploadProgress.style.display = 'none';
+                    if (xhr.status === 200) {
+                        const result = JSON.parse(xhr.responseText);
+                        const infoJsonObj = JSON.parse(infoJsonContent.value);
+                        infoJsonObj.uuid = result.uuid;
+                        infoJsonContent.value = JSON.stringify(infoJsonObj, null, 2);
+                        
+                        log(`模型上传成功: ${result.name} (${result.uuid})`, 'success');
+                        fetchModels();
+                        uploadForm.reset();
+                        infoJsonEditor.style.display = 'none';
+                        window.generatedModelUuid = null;
+                    } else {
+                        try {
+                            const errorData = JSON.parse(xhr.responseText);
+                            log(`上传模型失败: ${errorData.error}`, 'error');
+                        } catch (e) {
+                            log(`上传模型失败: ${xhr.statusText}`, 'error');
+                        }
+                    }
+                };
+
+                // 确保进度条至少展示2秒
+                const MIN_DISPLAY_TIME = 2000; // 2秒
+                const timeElapsed = Date.now() - startTime;
+
+                if (timeElapsed < MIN_DISPLAY_TIME) {
+                    // 如果上传时间小于2秒，延迟隐藏进度条
+                    setTimeout(hideProgressBar, MIN_DISPLAY_TIME - timeElapsed);
+                } else {
+                    // 否则立即隐藏
+                    hideProgressBar();
+                }
+            });
+
+            xhr.addEventListener('error', function() {
+                uploadProgress.style.display = 'none';
+                log('上传失败：网络错误', 'error');
+                window.generatedModelUuid = null;
+            });
+
+            xhr.addEventListener('abort', function() {
+                uploadProgress.style.display = 'none';
+                log('上传已取消', 'info');
+                window.generatedModelUuid = null;
+            });
+
+            xhr.open('POST', '/v1/model', true);
+            xhr.send(formData);
+        });
+
+        refreshModelsBtn.addEventListener('click', () => {
+            log('手动刷新模型列表', 'info');
+            fetchModels();
+        });
+
+        // 初始加载
+        fetchModels();
+    </script>
+</body>
+</html> 
