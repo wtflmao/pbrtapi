@@ -24,7 +24,7 @@
             <div class="upload-section">
                 <h2>上传模型</h2>
                 <form id="uploadForm" enctype="multipart/form-data">
-                    <input type="file" id="modelFile" name="model" accept=".zip,.obj,.glb,.gltf,.fbx,.3ds,.max,.ply,.pbrt">
+                    <input type="file" id="modelFile" name="model" accept=".zip,.rar,.obj,.glb,.gltf,.blend,.fbx,.3ds,.max,.ply,.pbrt,.stl,.dae,.dxf,.lwo">
                     <div id="infoJsonEditor" style="display: none;">
                         <h3>编辑 info.json</h3>
                         <textarea id="infoJsonContent"></textarea>
@@ -43,7 +43,7 @@
         </form>
     </div>
 
-    <!-- 添加上传进度弹框 -->
+    <!-- 添加、上传进度弹框 -->
     <div id="uploadProgress" class="upload-progress">
         <div class="upload-progress-content">
             <h3>文件上传中</h3>

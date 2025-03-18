@@ -691,6 +691,543 @@ app.get('/debug/models', (req, res) => {
     res.render('debug-models');
 });
 
+/**
+ * @route GET /v1/convert/:uuid
+ * @description 将指定UUID的模型转换为PBRT格式
+ * @param {string} uuid - 模型的唯一标识
+ * @returns {Object} 转换结果
+ * @throws {404} 模型不存在时
+ * @throws {500} 转换失败时
+ */
+app.get('/v1/convert/:uuid', async (req, res) => {
+    try {
+        const modelId = req.params.uuid;
+        const modelDir = path.join(MODELS_DIR, modelId);
+
+        // 检查模型目录是否存在
+        if (!fs.existsSync(modelDir)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+
+        // 读取模型信息
+        const infoPath = path.join(modelDir, 'info.json');
+        if (!fs.existsSync(infoPath)) {
+            return res.status(404).json({ error: '模型信息文件不存在' });
+        }
+
+        const modelInfo = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+        const modelPath = modelInfo.model_path;
+
+        // 检查模型文件是否存在
+        const modelFilePath = path.join(modelDir, modelPath);
+        if (!fs.existsSync(modelFilePath)) {
+            return res.status(404).json({ error: '模型文件不存在' });
+        }
+
+        // 检查是否已经转换过
+        const nonoPbrtPath = path.join(modelDir, 'nono.pbrt');
+        if (fs.existsSync(nonoPbrtPath)) {
+            return res.json({ 
+                message: '模型已经转换', 
+                uuid: modelId, 
+                nono_pbrt: 'nono.pbrt' 
+            });
+        }
+
+        // 执行assimp命令进行转换
+        try {
+            const execFile = util.promisify(childProcess.execFile);
+            
+            // 切换到模型目录并执行assimp
+            console.log(`[Convert] 当前目录: ${modelDir}`);
+            console.log(`[Convert] 模型文件: ${modelPath}`);
+            
+            // 使用绝对路径确保文件能被找到
+            const fullModelPath = path.join(modelDir, modelPath);
+            console.log(`[Convert] 完整模型路径: ${fullModelPath}`);
+            
+            // 使用绝对路径调用assimp
+            const result = await execFile('assimp', ['export', fullModelPath, 'no', '-fpbrt', 'full'], {
+                cwd: modelDir
+            });
+
+
+            console.log(`[Convert] 成功转换模型 ${modelId} 为PBRT格式`);
+            if (result.stderr) {
+                console.warn(`[Convert] 转换警告: ${result.stderr}`);
+            }
+            if (result.stdout) {
+                console.log(`[Convert] 转换输出: ${result.stdout}`);
+            }
+            
+            // 检查输出文件是否存在
+            const expectedPath = path.join(modelDir, 'no.pbrt');
+            if (fs.existsSync(expectedPath)) {
+                // 如果输出文件名是no.pbrt（而不是nono.pbrt），则重命名
+                fs.renameSync(expectedPath, nonoPbrtPath);
+            }
+
+            // 检查转换后的文件是否存在
+            if (!fs.existsSync(nonoPbrtPath)) {
+                throw new Error('转换后的PBRT文件不存在');
+            }
+
+            // 处理nono.pbrt文件内容，删除#Textures之前的所有内容
+            try {
+                // 读取文件内容
+                const pbrtContent = fs.readFileSync(nonoPbrtPath, 'utf8');
+                
+                // 查找# Textures位置
+                const texturesIndex = pbrtContent.indexOf('# Textures');
+                
+                if (texturesIndex !== -1) {
+                    // 保留# Textures及其之后的内容
+                    const newContent = pbrtContent.substring(texturesIndex);
+                    
+                    // 写回文件
+                    fs.writeFileSync(nonoPbrtPath, newContent, 'utf8');
+                    console.log(`[Convert] 成功处理nono.pbrt文件`);
+                } else {
+                    console.warn(`[Convert] 未找到#Textures标记，nono.pbrt保持原样`);
+                }
+            } catch (fileError) {
+                console.error(`[Convert] 处理nono.pbrt文件失败: ${fileError.message}`);
+                // 不中断流程，继续执行
+            }
+
+            // 在info.json中添加转换信息
+            modelInfo.pbrt_converted = true;
+            modelInfo.nono_available = true; // 添加nono_available标志
+            modelInfo.momo_available = false;
+            modelInfo.pbrt_convert_date = new Date().toISOString();
+            fs.writeFileSync(infoPath, JSON.stringify(modelInfo, null, 4), 'utf8');
+
+            res.json({ 
+                message: '模型转换成功', 
+                uuid: modelId, 
+                nono_pbrt: 'nono.pbrt' 
+            });
+        } catch (error) {
+            console.error(`[Convert] 执行assimp命令失败: ${error.message}`);
+            // 添加更多错误信息方便调试
+            if (error.stderr) {
+                console.error(`[Convert] 错误输出: ${error.stderr}`);
+            }
+            if (error.stdout) {
+                console.error(`[Convert] 标准输出: ${error.stdout}`);
+            }
+            throw new Error(`模型转换失败: ${error.message}`);
+        }
+    } catch (error) {
+        console.error('模型转换失败:', error);
+        res.status(500).json({ error: error.message || '模型转换失败' });
+    }
+});
+
+/**
+ * @route GET /v1/model/nono/:uuid
+ * @description 获取指定UUID的模型转换后的nono.pbrt文件
+ * @param {string} uuid - 模型的唯一标识
+ * @returns {file} nono.pbrt文件
+ * @throws {404} 模型或PBRT文件不存在时
+ * @throws {500} 获取文件失败时
+ */
+app.get('/v1/model/nono/:uuid', (req, res) => {
+    try {
+        const modelId = req.params.uuid;
+        const modelDir = path.join(MODELS_DIR, modelId);
+        const nonoPbrtPath = path.join(modelDir, 'nono.pbrt');
+
+        if (!fs.existsSync(modelDir)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+
+        if (!fs.existsSync(nonoPbrtPath)) {
+            return res.status(404).json({ error: 'nono.pbrt文件不存在，请先转换模型' });
+        }
+
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', `attachment; filename="nono-${modelId}.pbrt"`);
+        fs.createReadStream(nonoPbrtPath).pipe(res);
+    } catch (error) {
+        console.error('获取nono.pbrt文件失败:', error);
+        res.status(500).json({ error: '获取nono.pbrt文件失败' });
+    }
+});
+
+/**
+ * @route GET /v1/model/momo/:uuid
+ * @description 获取指定UUID的模型的momo.pbrt文件
+ * @param {string} uuid - 模型的唯一标识
+ * @returns {file} momo.pbrt文件
+ * @throws {404} 模型或PBRT文件不存在时
+ * @throws {500} 获取文件失败时
+ */
+app.get('/v1/model/momo/:uuid', (req, res) => {
+    try {
+        const modelId = req.params.uuid;
+        const modelDir = path.join(MODELS_DIR, modelId);
+        const momoPbrtPath = path.join(modelDir, 'momo.pbrt');
+
+        if (!fs.existsSync(modelDir)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+
+        if (!fs.existsSync(momoPbrtPath)) {
+            return res.status(404).json({ error: 'momo.pbrt文件不存在' });
+        }
+
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', `attachment; filename="momo-${modelId}.pbrt"`);
+        fs.createReadStream(momoPbrtPath).pipe(res);
+    } catch (error) {
+        console.error('获取momo.pbrt文件失败:', error);
+        res.status(500).json({ error: '获取momo.pbrt文件失败' });
+    }
+});
+
+/**
+ * @route GET /v1/model/:uuid
+ * @description 获取指定UUID的模型信息
+ * @param {string} uuid - 模型的唯一标识
+ * @returns {Object} 模型信息
+ * @throws {404} 模型不存在时
+ * @throws {500} 获取模型失败时
+ */
+app.get('/v1/model/:uuid', (req, res) => {
+    try {
+        const modelId = req.params.uuid;
+        const modelDir = path.join(MODELS_DIR, modelId);
+        const infoPath = path.join(modelDir, 'info.json');
+
+        if (!fs.existsSync(modelDir) || !fs.existsSync(infoPath)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+
+        const modelInfo = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+        res.json(modelInfo);
+    } catch (error) {
+        console.error('获取模型信息失败:', error);
+        res.status(500).json({ error: '获取模型信息失败' });
+    }
+});
+
+/**
+ * @route POST /v1/transform
+ * @description 将指定UUID的nono.pbrt文件进行变换并生成momo.pbrt
+ * @param {string} uuid - 模型的唯一标识
+ * @param {array} [translate] - 可选参数，三元组，表示平移量 [x, y, z]
+ * @param {array} [rotate] - 可选参数，四元组，表示旋转量 [angle, x, y, z]
+ * @param {array} [scale] - 可选参数，三元组，表示缩放量 [x, y, z]
+ * @returns {Object} 转换结果
+ * @throws {404} 模型或nono.pbrt文件不存在时
+ * @throws {500} 转换失败时
+ */
+app.post('/v1/transform', express.json(), async (req, res) => {
+    try {
+        const { uuid, translate, rotate, scale } = req.body;
+        
+        if (!uuid) {
+            return res.status(400).json({ error: '缺少必要参数：uuid' });
+        }
+        
+        // 验证参数格式
+        if (translate && (!Array.isArray(translate) || translate.length !== 3)) {
+            return res.status(400).json({ error: 'translate参数必须是长度为3的数组 [x, y, z]' });
+        }
+        
+        if (rotate && (!Array.isArray(rotate) || rotate.length !== 4)) {
+            return res.status(400).json({ error: 'rotate参数必须是长度为4的数组 [angle, x, y, z]' });
+        }
+        
+        if (scale && (!Array.isArray(scale) || scale.length !== 3)) {
+            return res.status(400).json({ error: 'scale参数必须是长度为3的数组 [x, y, z]' });
+        }
+        
+        const modelDir = path.join(MODELS_DIR, uuid);
+        const nonoPbrtPath = path.join(modelDir, 'nono.pbrt');
+        const momoPbrtPath = path.join(modelDir, 'momo.pbrt');
+        const infoPath = path.join(modelDir, 'info.json');
+        
+        // 检查目录和文件是否存在
+        if (!fs.existsSync(modelDir)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+        
+        if (!fs.existsSync(nonoPbrtPath)) {
+            return res.status(404).json({ error: 'nono.pbrt文件不存在，请先转换模型' });
+        }
+        
+        // 读取nono.pbrt文件内容
+        const pbrtContent = fs.readFileSync(nonoPbrtPath, 'utf8');
+        
+        // 生成变换命令字符串
+        const transformCommands = [];
+        if (translate) {
+            transformCommands.push(`  Translate ${translate[0]} ${translate[1]} ${translate[2]}`);
+        }
+        if (rotate) {
+            transformCommands.push(`  Rotate ${rotate[0]} ${rotate[1]} ${rotate[2]} ${rotate[3]}`);
+        }
+        if (scale) {
+            transformCommands.push(`  Scale ${scale[0]} ${scale[1]} ${scale[2]}`);
+        }
+        
+        // 生成变换命令
+        const transformStr = transformCommands.join('\n');
+        
+        // 在文件开头添加注释，记录时间和变换参数
+        const timestamp = new Date().toISOString();
+        let headerComment = `# Transform applied on ${timestamp}\n`;
+        headerComment += `# Parameters:\n`;
+        headerComment += translate ? `# - Translate: [${translate.join(', ')}]\n` : '# - Translate: none\n';
+        headerComment += rotate ? `# - Rotate: [${rotate.join(', ')}]\n` : '# - Rotate: none\n';
+        headerComment += scale ? `# - Scale: [${scale.join(', ')}]\n` : '# - Scale: none\n';
+        headerComment += `#-------------------------------------------\n\n`;
+          
+        // 使用正则表达式查找所有AttributeBegin/AttributeEnd对
+        const attributePattern = /(#.*\n)?\s*(AttributeBegin\s*(?:[^\n]*\n)+?)(?=\s*Shape|\s*Material|\s*NamedMaterial|\s*LightSource|\s*CoordSysTransform|\s*AttributeEnd)/g;
+        
+        let modifiedContent = pbrtContent;
+        let match;
+        
+        // 使用循环处理每个匹配项
+        while ((match = attributePattern.exec(pbrtContent)) !== null) {
+            const fullMatch = match[0];
+            const commentLine = match[1] || '';
+            const attrBlock = match[2];
+            
+            // 检查是否有no-more-transformation标记
+            if (commentLine && commentLine.includes('#[no-more-transformation]')) {
+                continue; // 跳过这个块
+            }
+            
+            // 检查是否已经有变换命令
+            const hasTranslate = /\s+Translate\s+/.test(attrBlock);
+            const hasRotate = /\s+Rotate\s+/.test(attrBlock);
+            const hasScale = /\s+Scale\s+/.test(attrBlock);
+            
+            // 如果没有变换命令或需要添加新命令
+            if (transformCommands.length > 0) {
+                let replacementText;
+                
+                if (hasTranslate || hasRotate || hasScale) {
+                    // 查找最后一个变换命令
+                    const commands = ['Translate', 'Rotate', 'Scale'];
+                    let lastPos = -1;
+                    let lastCommand = '';
+                    
+                    for (const cmd of commands) {
+                        const pos = attrBlock.lastIndexOf(cmd);
+                        if (pos > lastPos) {
+                            lastPos = pos;
+                            lastCommand = cmd;
+                        }
+                    }
+                    
+                    if (lastPos !== -1) {
+                        // 找到命令所在行的结束位置
+                        const lineEnd = attrBlock.indexOf('\n', lastPos);
+                        if (lineEnd !== -1) {
+                            // 在最后一个变换命令后插入新命令
+                            replacementText = commentLine + 
+                                             attrBlock.substring(0, lineEnd + 1) + 
+                                             transformStr + '\n' + 
+                                             attrBlock.substring(lineEnd + 1);
+                        } else {
+                            // 如果找不到换行符，附加到块末尾
+                            replacementText = commentLine + attrBlock + '\n' + transformStr + '\n';
+                        }
+                    } else {
+                        // 如果没有找到变换命令（不应该发生），附加到块末尾
+                        replacementText = commentLine + attrBlock + transformStr + '\n';
+                    }
+                } else {
+                    // 如果没有变换命令，在AttributeBegin后添加
+                    replacementText = commentLine + attrBlock + transformStr + '\n';
+                }
+                
+                // 替换原始匹配的内容
+                modifiedContent = modifiedContent.replace(fullMatch, replacementText);
+                // 更新模式匹配位置，避免无限循环
+                attributePattern.lastIndex += (replacementText.length - fullMatch.length);
+            }
+        }
+        
+        // 构建最终文件内容
+        const finalContent = headerComment + modifiedContent;
+        
+        // 写入momo.pbrt文件
+        fs.writeFileSync(momoPbrtPath, finalContent, 'utf8');
+        
+        // 更新info.json
+        if (fs.existsSync(infoPath)) {
+            try {
+                const modelInfo = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+                modelInfo.momo_available = true;
+                modelInfo.momo_transform = {
+                    timestamp,
+                    translate: translate || null,
+                    rotate: rotate || null,
+                    scale: scale || null
+                };
+                fs.writeFileSync(infoPath, JSON.stringify(modelInfo, null, 4), 'utf8');
+            } catch (err) {
+                console.error(`[Transform] 更新info.json失败: ${err.message}`);
+                // 不中断流程
+            }
+        }
+        
+        res.json({
+            message: '模型转换成功',
+            uuid,
+            momo_pbrt: 'momo.pbrt',
+            transforms: {
+                translate: translate || null,
+                rotate: rotate || null,
+                scale: scale || null
+            }
+        });
+        
+    } catch (error) {
+        console.error('模型变换失败:', error);
+        res.status(500).json({ error: error.message || '模型变换失败' });
+    }
+});
+
+/**
+ * @route GET /v1/convert/:uuid
+ * @description 将指定UUID的模型转换为PBRT格式
+ * @param {string} uuid - 模型的唯一标识
+ * @returns {Object} 转换结果
+ * @throws {404} 模型不存在时
+ * @throws {500} 转换失败时
+ */
+app.get('/v1/convert/:uuid', async (req, res) => {
+    try {
+        const modelId = req.params.uuid;
+        const modelDir = path.join(MODELS_DIR, modelId);
+
+        // 检查模型目录是否存在
+        if (!fs.existsSync(modelDir)) {
+            return res.status(404).json({ error: '模型不存在' });
+        }
+
+        // 读取模型信息
+        const infoPath = path.join(modelDir, 'info.json');
+        if (!fs.existsSync(infoPath)) {
+            return res.status(404).json({ error: '模型信息文件不存在' });
+        }
+
+        const modelInfo = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+        const modelPath = modelInfo.model_path;
+
+        // 检查模型文件是否存在
+        const modelFilePath = path.join(modelDir, modelPath);
+        if (!fs.existsSync(modelFilePath)) {
+            return res.status(404).json({ error: '模型文件不存在' });
+        }
+
+        // 检查是否已经转换过
+        const nonoPbrtPath = path.join(modelDir, 'nono.pbrt');
+        if (fs.existsSync(nonoPbrtPath)) {
+            return res.json({ 
+                message: '模型已经转换', 
+                uuid: modelId, 
+                nono_pbrt: 'nono.pbrt' 
+            });
+        }
+
+        // 执行assimp命令进行转换
+        try {
+            const execFile = util.promisify(childProcess.execFile);
+            
+            // 切换到模型目录并执行assimp
+            console.log(`[Convert] 当前目录: ${modelDir}`);
+            console.log(`[Convert] 模型文件: ${modelPath}`);
+            
+            // 使用绝对路径确保文件能被找到
+            const fullModelPath = path.join(modelDir, modelPath);
+            console.log(`[Convert] 完整模型路径: ${fullModelPath}`);
+            
+            // 使用绝对路径调用assimp
+            const result = await execFile('assimp', ['export', fullModelPath, 'no', '-fpbrt', 'full'], {
+                cwd: modelDir
+            });
+
+
+            console.log(`[Convert] 成功转换模型 ${modelId} 为PBRT格式`);
+            if (result.stderr) {
+                console.warn(`[Convert] 转换警告: ${result.stderr}`);
+            }
+            if (result.stdout) {
+                console.log(`[Convert] 转换输出: ${result.stdout}`);
+            }
+            
+            // 检查输出文件是否存在
+            const expectedPath = path.join(modelDir, 'no.pbrt');
+            if (fs.existsSync(expectedPath)) {
+                // 如果输出文件名是no.pbrt（而不是nono.pbrt），则重命名
+                fs.renameSync(expectedPath, nonoPbrtPath);
+            }
+
+            // 检查转换后的文件是否存在
+            if (!fs.existsSync(nonoPbrtPath)) {
+                throw new Error('转换后的PBRT文件不存在');
+            }
+
+            // 处理nono.pbrt文件内容，删除#Textures之前的所有内容
+            try {
+                // 读取文件内容
+                const pbrtContent = fs.readFileSync(nonoPbrtPath, 'utf8');
+                
+                // 查找# Textures位置
+                const texturesIndex = pbrtContent.indexOf('# Textures');
+                
+                if (texturesIndex !== -1) {
+                    // 保留# Textures及其之后的内容
+                    const newContent = pbrtContent.substring(texturesIndex);
+                    
+                    // 写回文件
+                    fs.writeFileSync(nonoPbrtPath, newContent, 'utf8');
+                    console.log(`[Convert] 成功处理nono.pbrt文件`);
+                } else {
+                    console.warn(`[Convert] 未找到#Textures标记，nono.pbrt保持原样`);
+                }
+            } catch (fileError) {
+                console.error(`[Convert] 处理nono.pbrt文件失败: ${fileError.message}`);
+                // 不中断流程，继续执行
+            }
+
+            // 在info.json中添加转换信息
+            modelInfo.pbrt_converted = true;
+            modelInfo.nono_available = true; // 添加nono_available标志
+            modelInfo.momo_available = false;
+            modelInfo.pbrt_convert_date = new Date().toISOString();
+            fs.writeFileSync(infoPath, JSON.stringify(modelInfo, null, 4), 'utf8');
+
+            res.json({ 
+                message: '模型转换成功', 
+                uuid: modelId, 
+                nono_pbrt: 'nono.pbrt' 
+            });
+        } catch (error) {
+            console.error(`[Convert] 执行assimp命令失败: ${error.message}`);
+            // 添加更多错误信息方便调试
+            if (error.stderr) {
+                console.error(`[Convert] 错误输出: ${error.stderr}`);
+            }
+            if (error.stdout) {
+                console.error(`[Convert] 标准输出: ${error.stdout}`);
+            }
+            throw new Error(`模型转换失败: ${error.message}`);
+        }
+    } catch (error) {
+        console.error('模型转换失败:', error);
+        res.status(500).json({ error: error.message || '模型转换失败' });
+    }
+});
+
 // 添加错误处理中间件
 app.use((error, req, res, next) => {
     if (error instanceof multer.MulterError) {
