@@ -147,4 +147,142 @@ textarea {
 #uploadSpeed {
     font-size: 14px;
     color: #666;
+}
+
+/* 模型管理样式 */
+.model-item {
+    border: 1px solid #ddd;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 5px;
+    position: relative;
+}
+
+.model-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.buttons-container {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.buttons-container button {
+    padding: 5px 10px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    background-color: #4CAF50;
+    color: white;
+    font-size: 12px;
+}
+
+.buttons-container button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.convert-btn {
+    background-color: #2196F3 !important;
+}
+
+.view-nono-btn, .view-momo-btn {
+    background-color: #ff9800 !important;
+}
+
+.transform-btn {
+    background-color: #9c27b0 !important;
+}
+
+.transform-form {
+    background-color: #f9f9f9;
+    padding: 10px;
+    margin-top: 10px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+}
+
+.transform-form div {
+    margin-bottom: 8px;
+}
+
+.transform-form input {
+    width: 100%;
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+}
+
+.transform-form button {
+    margin-top: 8px;
+    margin-right: 5px;
+    padding: 5px 10px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.submit-transform-btn {
+    background-color: #4CAF50;
+    color: white;
+}
+
+.cancel-transform-btn {
+    background-color: #f44336;
+    color: white;
+}
+
+/* 模型列表标题与控件样式 */
+.models-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.models-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.model-count {
+    background-color: #f0f0f0;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 14px;
+    color: #555;
+}
+
+.refresh-btn {
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.3s;
+}
+
+.refresh-btn:hover {
+    background-color: #45a049;
+}
+
+/* 加载指示器样式 */
+.info-loading {
+    padding: 10px;
+    margin: 10px 0;
+    background-color: #e6f7ff;
+    border-left: 4px solid #1890ff;
+    color: #0050b3;
+    border-radius: 2px;
+    text-align: center;
 } 

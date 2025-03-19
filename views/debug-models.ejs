@@ -8,10 +8,6 @@
 <body>
     <div class="container">
         <div class="models-list">
-            <h2>
-                模型列表 
-                <button id="refreshModelsBtn" style="margin-left: 10px;">🔄 刷新</button>
-            </h2>
             <div id="modelsList"></div>
         </div>
         
@@ -64,7 +60,6 @@
         const infoJsonEditor = document.getElementById('infoJsonEditor');
         const infoJsonContent = document.getElementById('infoJsonContent');
         const logContainer = document.getElementById('logContainer');
-        const refreshModelsBtn = document.getElementById('refreshModelsBtn');
         const uploadProgress = document.getElementById('uploadProgress');
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
@@ -92,13 +87,227 @@
                 .then(response => response.json())
                 .then(models => {
                     modelsList.innerHTML = '';
+                    
+                    // 添加模型计数器
+                    const modelCountSpan = document.createElement('span');
+                    modelCountSpan.id = 'model-count';
+                    modelCountSpan.textContent = `共${models.length}个模型`;
+                    modelCountSpan.className = 'model-count';
+                    
+                    // 创建刷新按钮
+                    const refreshBtn = document.createElement('button');
+                    refreshBtn.className = 'refresh-btn';
+                    refreshBtn.textContent = '刷新列表';
+                    refreshBtn.addEventListener('click', function() {
+                        log('手动刷新模型列表', 'info');
+                        fetchModels();
+                    });
+                    
+                    // 清空并重建标题区域
+                    const titleDiv = document.createElement('div');
+                    titleDiv.className = 'models-header';
+                    titleDiv.appendChild(document.createElement('h2')).textContent = '模型列表';
+                    
+                    // 添加计数器和刷新按钮到标题区域
+                    const controlsDiv = document.createElement('div');
+                    controlsDiv.className = 'models-controls';
+                    controlsDiv.appendChild(modelCountSpan);
+                    controlsDiv.appendChild(refreshBtn);
+                    titleDiv.appendChild(controlsDiv);
+                    
+                    modelsList.appendChild(titleDiv);
+                    
                     models.forEach(model => {
                         const modelDiv = document.createElement('div');
+                        modelDiv.className = 'model-item';
+                        
+                        // 添加模型信息和操作按钮
                         modelDiv.innerHTML = `
+                            <div class="model-actions">
+                                <h3>${model.name || 'Unnamed Model'} (${model.uuid})</h3>
+                                <div class="buttons-container">
+                                    <button class="convert-btn" data-uuid="${model.uuid}" ${model.nono_available ? 'disabled' : ''}>
+                                        ${model.nono_available ? '已转换PBRT' : '转换为PBRT'}
+                                    </button>
+                                    <button class="view-nono-btn" data-uuid="${model.uuid}" ${!model.nono_available ? 'disabled' : ''}>
+                                        查看nono.pbrt
+                                    </button>
+                                    <button class="transform-btn" data-uuid="${model.uuid}" ${!model.nono_available ? 'disabled' : ''}>
+                                        变换模型
+                                    </button>
+                                    <button class="view-momo-btn" data-uuid="${model.uuid}" ${!model.momo_available ? 'disabled' : ''}>
+                                        查看momo.pbrt
+                                    </button>
+                                </div>
+                            </div>
                             <pre>${JSON.stringify(model, null, 2)}</pre>
                         `;
+                        
                         modelsList.appendChild(modelDiv);
                     });
+                    
+                    // 添加转换按钮的事件监听
+                    document.querySelectorAll('.convert-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const uuid = this.getAttribute('data-uuid');
+                            log(`手动转换模型 ${uuid} 为PBRT格式...`, 'info');
+                            
+                            // 显示加载状态
+                            this.disabled = true;
+                            this.textContent = '转换中...';
+                            const originalText = this.textContent;
+                            
+                            fetch(`/v1/convert/${uuid}`)
+                                .then(response => {
+                                    if (!response.ok) {
+                                        throw new Error(`HTTP错误 ${response.status}`);
+                                    }
+                                    return response.json();
+                                })
+                                .then(result => {
+                                    if (result.message === '模型已经转换' || result.message === '模型转换成功') {
+                                        log(`模型 ${uuid} 成功转换为PBRT格式`, 'success');
+                                        this.disabled = true;
+                                        this.textContent = '已转换PBRT';
+                                        
+                                        // 启用查看按钮
+                                        const viewBtn = document.querySelector(`.view-nono-btn[data-uuid="${uuid}"]`);
+                                        if (viewBtn) {
+                                            viewBtn.disabled = false;
+                                        }
+                                        
+                                        // 启用变换按钮
+                                        const transformBtn = document.querySelector(`.transform-btn[data-uuid="${uuid}"]`);
+                                        if (transformBtn) {
+                                            transformBtn.disabled = false;
+                                        }
+                                    } else {
+                                        log(`模型转换结果: ${JSON.stringify(result)}`, 'info');
+                                        // 恢复按钮状态
+                                        this.disabled = false;
+                                        this.textContent = originalText;
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error("转换请求失败:", error);
+                                    log(`模型转换失败: ${error.message}`, 'error');
+                                    // 恢复按钮状态
+                                    this.disabled = false;
+                                    this.textContent = originalText;
+                                })
+                                .finally(() => {
+                                    // 刷新模型列表
+                                    fetchModels();
+                                });
+                        });
+                    });
+                    
+                    // 添加查看nono.pbrt按钮的事件监听
+                    document.querySelectorAll('.view-nono-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const uuid = this.getAttribute('data-uuid');
+                            window.open(`/v1/model/nono/${uuid}`, '_blank');
+                        });
+                    });
+                    
+                    // 添加变换模型按钮的事件监听
+                    document.querySelectorAll('.transform-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const uuid = this.getAttribute('data-uuid');
+                            
+                            // 创建简单的变换表单
+                            const transformForm = document.createElement('div');
+                            transformForm.className = 'transform-form';
+                            transformForm.innerHTML = `
+                                <h3>模型变换</h3>
+                                <div>
+                                    <label>平移 (translate):</label>
+                                    <input type="text" class="translate-input" placeholder="[x, y, z] 例如: [1, 0, 0]">
+                                </div>
+                                <div>
+                                    <label>旋转 (rotate):</label>
+                                    <input type="text" class="rotate-input" placeholder="[angle, x, y, z] 例如: [90, 0, 1, 0]">
+                                </div>
+                                <div>
+                                    <label>缩放 (scale):</label>
+                                    <input type="text" class="scale-input" placeholder="[x, y, z] 例如: [2, 2, 2]">
+                                </div>
+                                <button class="submit-transform-btn">应用变换</button>
+                                <button class="cancel-transform-btn">取消</button>
+                            `;
+                            
+                            // 获取该模型元素，并添加变换表单
+                            const modelItem = this.closest('.model-item');
+                            modelItem.appendChild(transformForm);
+                            
+                            // 应用变换按钮事件
+                            transformForm.querySelector('.submit-transform-btn').addEventListener('click', function() {
+                                const translateInput = transformForm.querySelector('.translate-input').value;
+                                const rotateInput = transformForm.querySelector('.rotate-input').value;
+                                const scaleInput = transformForm.querySelector('.scale-input').value;
+                                
+                                // 解析输入
+                                let translate, rotate, scale;
+                                try {
+                                    if (translateInput) translate = JSON.parse(translateInput);
+                                    if (rotateInput) rotate = JSON.parse(rotateInput);
+                                    if (scaleInput) scale = JSON.parse(scaleInput);
+                                } catch (e) {
+                                    log('输入格式错误，请使用JSON数组格式', 'error');
+                                    return;
+                                }
+                                
+                                // 构建请求数据
+                                const data = { uuid };
+                                if (translate) data.translate = translate;
+                                if (rotate) data.rotate = rotate;
+                                if (scale) data.scale = scale;
+                                
+                                log(`正在应用变换到模型 ${uuid}...`, 'info');
+                                
+                                // 发送变换请求
+                                fetch('/v1/transform', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(data)
+                                })
+                                .then(response => response.json())
+                                .then(result => {
+                                    log(`变换应用成功: ${JSON.stringify(result.transforms)}`, 'success');
+                                    
+                                    // 启用查看momo.pbrt按钮
+                                    const viewMomoBtn = document.querySelector(`.view-momo-btn[data-uuid="${uuid}"]`);
+                                    if (viewMomoBtn) {
+                                        viewMomoBtn.disabled = false;
+                                    }
+                                    
+                                    // 刷新模型列表
+                                    fetchModels();
+                                })
+                                .catch(error => {
+                                    log(`应用变换失败: ${error.message}`, 'error');
+                                })
+                                .finally(() => {
+                                    // 移除变换表单
+                                    transformForm.remove();
+                                });
+                            });
+                            
+                            // 取消按钮事件
+                            transformForm.querySelector('.cancel-transform-btn').addEventListener('click', function() {
+                                transformForm.remove();
+                            });
+                        });
+                    });
+                    
+                    // 添加查看momo.pbrt按钮的事件监听
+                    document.querySelectorAll('.view-momo-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const uuid = this.getAttribute('data-uuid');
+                            window.open(`/v1/model/momo/${uuid}`, '_blank');
+                        });
+                    });
+                    
                     log(`获取模型列表成功，共 ${models.length} 个模型`);
                 })
                 .catch(error => {
@@ -137,32 +346,101 @@
 
             const ext = file.name.split('.').pop().toLowerCase();
             
-            if (['obj', 'glb', 'gltf', 'fbx', '3ds', 'max', 'ply', 'pbrt', 'zip'].includes(ext)) {
-                // 生成一个全局的 UUID，在整个上传过程中保持一致
-                const consistentUuid = crypto.randomUUID();
-                const name = file.name.split('.')[0] === "" ? (file.name.split('.')[1] ? file.name.split('.')[1] : file.name) : file.name.split('.')[0];
-                const defaultInfoJson = JSON.stringify({
-                    name: name,
-                    type: 'satellite',
-                    en_US: {
-                        name: name,
-                        description: 'This is a satellite model',
-                    },
-                    zh_CN: {
-                        name: name,
-                        description: '这是一个卫星模型',
-                    }
-                }, null, 2);
+            // 生成一个全局的 UUID，在整个上传过程中保持一致
+            const consistentUuid = crypto.randomUUID();
+            
+            if (['zip', 'rar'].includes(ext)) {
+                // 如果是压缩包，尝试预览其中的info.json
+                log(`检测到压缩包文件，正在预览其中的info.json...`, 'info');
                 
-                // 将 UUID 存储在一个全局变量中，以便在提交时使用
-                window.generatedModelUuid = consistentUuid;
-                infoJsonContent.value = defaultInfoJson;
+                // 创建FormData对象来发送文件
+                const formData = new FormData();
+                formData.append('archive', file);
+                
+                // 显示加载指示器
+                const infoLoading = document.createElement('div');
+                infoLoading.id = 'info-loading';
+                infoLoading.textContent = '正在读取压缩包中的info.json...';
+                infoLoading.className = 'info-loading';
                 infoJsonEditor.style.display = 'block';
+                infoJsonEditor.appendChild(infoLoading);
+                
+                // 发送预览请求
+                fetch('/v1/preview-zip', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // 移除加载指示器
+                    document.getElementById('info-loading')?.remove();
+                    
+                    if (data.info) {
+                        // 如果找到info.json，使用其内容
+                        log(`成功读取压缩包中的info.json`, 'success');
+                        
+                        // 确保info.json包含uuid
+                        data.info.uuid = data.info.uuid || consistentUuid;
+                        
+                        // 记录完整的info.json作为默认字段值
+                        window.defaultInfoFields = Object.keys(data.info);
+                        window.defaultInfoJson = JSON.parse(JSON.stringify(data.info));
+                        
+                        // 显示编辑器并填充内容
+                        infoJsonContent.value = JSON.stringify(data.info, null, 2);
+                        
+                        // 记录UUID用于上传
+                        window.generatedModelUuid = data.info.uuid;
+                    } else {
+                        // 如果压缩包中没有找到info.json，使用默认值
+                        log(`压缩包中未找到有效的info.json，使用默认值`, 'info');
+                        useDefaultInfoJson(file.name, consistentUuid);
+                    }
+                })
+                .catch(error => {
+                    // 移除加载指示器
+                    document.getElementById('info-loading')?.remove();
+                    
+                    // 发生错误，使用默认值
+                    log(`预览info.json失败: ${error.message}，使用默认值`, 'error');
+                    useDefaultInfoJson(file.name, consistentUuid);
+                });
+            } else if (['obj', 'glb', 'gltf', 'fbx', '3ds', 'max', 'ply', 'pbrt', 'stl', 'dae', 'dxf', 'blend', 'lwo'].includes(ext)) {
+                // 单个模型文件，使用默认值
+                useDefaultInfoJson(file.name, consistentUuid);
             } else {
                 infoJsonEditor.style.display = 'none';
                 window.generatedModelUuid = null;
+                window.defaultInfoFields = [];
             }
         });
+
+        // 提取创建默认info.json的逻辑到独立函数
+        function useDefaultInfoJson(fileName, uuid) {
+            const name = fileName.split('.')[0] === "" ? (fileName.split('.')[1] ? fileName.split('.')[1] : fileName) : fileName.split('.')[0];
+            const defaultInfoJson = {
+                uuid: uuid,
+                name: name,
+                type: 'satellite',
+                en_US: {
+                    name: name,
+                    description: 'This is a satellite model',
+                },
+                zh_CN: {
+                    name: name,
+                    description: '这是一个卫星模型',
+                }
+            };
+            
+            // 记录默认字段名称
+            window.defaultInfoFields = Object.keys(defaultInfoJson);
+            window.defaultInfoJson = JSON.parse(JSON.stringify(defaultInfoJson));
+            
+            // 将 UUID 存储在一个全局变量中，以便在提交时使用
+            window.generatedModelUuid = uuid;
+            infoJsonContent.value = JSON.stringify(defaultInfoJson, null, 2);
+            infoJsonEditor.style.display = 'block';
+        }
 
         uploadForm.addEventListener('submit', function(e) {
             e.preventDefault();
@@ -192,10 +470,66 @@
                     
                     // 只有非zip文件才设置model_path
                     const ext = modelFile.name.split('.').pop().toLowerCase();
-                    if (ext !== 'zip') {
-                        infoJson.model_path = modelFile.name;
+                    if (ext !== 'zip' && ext !== 'rar') {
+                        // 处理文件名中的空格和特殊字符
+                        const cleanedFilename = modelFile.name.replace(/[^\w\s\.-]/g, '_').replace(/\s+/g, '_');
+                        
+                        if (cleanedFilename !== modelFile.name) {
+                            log(`文件名含特殊字符，已自动替换: "${modelFile.name}" → "${cleanedFilename}"`, 'info');
+                            
+                            // 创建新的File对象，使用清理后的文件名
+                            const cleanedFile = new File([modelFile], cleanedFilename, { type: modelFile.type });
+                            
+                            // 更新FormData中的文件
+                            formData.set('model', cleanedFile);
+                            
+                            // 更新model_path
+                            infoJson.model_path = cleanedFilename;
+                        } else {
+                            infoJson.model_path = modelFile.name;
+                        }
                     }
+                    
+                    // 添加info.json
                     formData.append('info', JSON.stringify(infoJson));
+                    
+                    // 添加默认字段标记，用于服务器合并逻辑
+                    if (window.defaultInfoFields && window.defaultInfoFields.length > 0 && window.defaultInfoJson) {
+                        // 比较当前JSON和默认值，找出未修改的字段
+                        const unchangedFields = [];
+                        
+                        // 递归函数用于深入比较对象
+                        function compareObjects(current, defaults, path = '') {
+                            for (const key in defaults) {
+                                const nestedPath = path ? `${path}.${key}` : key;
+                                
+                                // 如果当前对象没有这个键，则它已被删除（被修改）
+                                if (!(key in current)) continue;
+                                
+                                // 检查该字段是否为顶层字段
+                                const isTopLevel = !path;
+                                
+                                // 如果是对象，递归比较
+                                if (typeof defaults[key] === 'object' && defaults[key] !== null && 
+                                    typeof current[key] === 'object' && current[key] !== null) {
+                                    compareObjects(current[key], defaults[key], nestedPath);
+                                } 
+                                // 否则比较值
+                                else if (JSON.stringify(current[key]) === JSON.stringify(defaults[key])) {
+                                    // 只标记顶层字段
+                                    if (isTopLevel) {
+                                        unchangedFields.push(key);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 开始比较
+                        compareObjects(infoJson, window.defaultInfoJson);
+                        
+                        formData.append('defaultInfoFields', JSON.stringify(unchangedFields));
+                        //log(`标记未修改的默认字段: ${unchangedFields.join(', ')}`, 'info');
+                    }
                 } catch (error) {
                     log(`info.json 解析错误: ${error.message}`, 'error');
                     return;
@@ -237,16 +571,65 @@
                 const hideProgressBar = () => {
                     uploadProgress.style.display = 'none';
                     if (xhr.status === 200) {
-                        const result = JSON.parse(xhr.responseText);
-                        const infoJsonObj = JSON.parse(infoJsonContent.value);
-                        infoJsonObj.uuid = result.uuid;
-                        infoJsonContent.value = JSON.stringify(infoJsonObj, null, 2);
-                        
-                        log(`模型上传成功: ${result.name} (${result.uuid})`, 'success');
-                        fetchModels();
-                        uploadForm.reset();
-                        infoJsonEditor.style.display = 'none';
-                        window.generatedModelUuid = null;
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            //console.log("上传响应:", result);
+                            //log(`上传响应: ${JSON.stringify(result)}`, 'info');
+                            
+                            // 更新info.json中的UUID
+                            try {
+                                const infoJsonObj = JSON.parse(infoJsonContent.value);
+                                infoJsonObj.uuid = result.uuid;
+                                infoJsonContent.value = JSON.stringify(infoJsonObj, null, 2);
+                            } catch (e) {
+                                console.error("更新info.json失败", e);
+                            }
+                            
+                            log(`模型上传成功: ${result.name || '未命名'} (${result.uuid})`, 'success');
+                            
+                            // 检查结果对象是否包含UUID
+                            if (!result.uuid) {
+                                log("上传响应中缺少UUID，无法执行自动转换", 'error');
+                                return;
+                            }
+                            
+                            // 自动转换模型为PBRT格式
+                            log(`正在自动转换模型 ${result.uuid} 为PBRT格式...`, 'info');
+                            
+                            // 调用服务端的转换接口，延迟1秒确保文件处理完成
+                            setTimeout(() => {
+                                fetch(`/v1/convert/${result.uuid}`)
+                                    .then(response => {
+                                        if (!response.ok) {
+                                            throw new Error(`HTTP错误 ${response.status}`);
+                                        }
+                                        return response.json();
+                                    })
+                                    .then(convertResult => {
+                                        console.log("转换响应:", convertResult);
+                                        if (convertResult.message === '模型已经转换' || convertResult.message === '模型转换成功') {
+                                            log(`模型 ${result.uuid} 成功转换为PBRT格式`, 'success');
+                                        } else {
+                                            log(`模型转换结果: ${JSON.stringify(convertResult)}`, 'info');
+                                        }
+                                    })
+                                    .catch(error => {
+                                        console.error("转换请求失败", error);
+                                        log(`模型转换失败: ${error.message}`, 'error');
+                                    })
+                                    .finally(() => {
+                                        // 刷新模型列表以显示最新状态
+                                        fetchModels();
+                                    });
+                            }, 1000);
+                            
+                            uploadForm.reset();
+                            infoJsonEditor.style.display = 'none';
+                            window.generatedModelUuid = null;
+                        } catch (e) {
+                            console.error("处理上传响应失败", e);
+                            log(`处理上传响应失败: ${e.message}`, 'error');
+                        }
                     } else {
                         try {
                             const errorData = JSON.parse(xhr.responseText);
@@ -284,11 +667,6 @@
 
             xhr.open('POST', '/v1/model', true);
             xhr.send(formData);
-        });
-
-        refreshModelsBtn.addEventListener('click', () => {
-            log('手动刷新模型列表', 'info');
-            fetchModels();
         });
 
         // 初始加载

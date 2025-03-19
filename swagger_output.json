@@ -1,0 +1,718 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "PBRT API文档",
+    "description": "PBRT渲染API接口文档",
+    "version": "1.0.0"
+  },
+  "host": "home.hhzm.win:3001",
+  "basePath": "/",
+  "tags": [
+    {
+      "name": "渲染相关",
+      "description": "渲染PBRT文件相关的API"
+    },
+    {
+      "name": "模型相关",
+      "description": "3D模型转换和管理相关的API"
+    },
+    {
+      "name": "系统状态",
+      "description": "系统状态和调试相关的API"
+    }
+  ],
+  "schemes": [
+    "https"
+  ],
+  "securityDefinitions": {},
+  "consumes": [
+    "application/json",
+    "multipart/form-data"
+  ],
+  "produces": [
+    "application/json",
+    "image/png"
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "系统状态"
+        ],
+        "description": "检查API服务是否正在运行",
+        "responses": {
+          "200": {
+            "description": "API服务正在运行"
+          }
+        }
+      }
+    },
+    "/render": {
+      "get": {
+        "tags": [
+          "渲染相关"
+        ],
+        "description": "返回渲染页面视图",
+        "responses": {
+          "200": {
+            "description": "成功返回渲染页面"
+          }
+        }
+      }
+    },
+    "/v1/upload": {
+      "post": {
+        "tags": [
+          "渲染相关"
+        ],
+        "description": "上传PBRT文件进行渲染",
+        "consumes": [
+          "multipart/form-data"
+        ],
+        "parameters": [
+          {
+            "name": "pbrtFile",
+            "in": "formData",
+            "type": "file",
+            "required": true,
+            "description": "要上传的PBRT文件"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "example": "any"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "上传成功",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "example": "任务标识UUID"
+                },
+                "filename": {
+                  "type": "string",
+                  "example": "上传的文件名"
+                },
+                "status": {
+                  "type": "string",
+                  "example": "任务状态"
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误"
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "tags": [
+          "渲染相关"
+        ],
+        "description": "获取渲染任务状态",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "type": "string"
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "type": "string"
+          },
+          {
+            "name": "uuid",
+            "in": "query",
+            "description": "任务的UUID",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功获取状态",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "example": "任务UUID"
+                },
+                "status": {
+                  "type": "string",
+                  "example": "任务状态"
+                },
+                "progress": {
+                  "type": "string",
+                  "example": "渲染进度百分比"
+                },
+                "imageData": {
+                  "type": "string",
+                  "example": "渲染图像的base64编码(如果已完成)"
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "任务不存在"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/debug/render": {
+      "post": {
+        "tags": [
+          "渲染相关"
+        ],
+        "description": "上传PBRT文件用于调试渲染",
+        "consumes": [
+          "multipart/form-data"
+        ],
+        "parameters": [
+          {
+            "name": "content-length",
+            "in": "header",
+            "type": "string"
+          },
+          {
+            "name": "pbrtFile",
+            "in": "formData",
+            "type": "file",
+            "required": true,
+            "description": "要上传的PBRT文件"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "hash": {
+                  "example": "any"
+                },
+                "exposure": {
+                  "example": "any"
+                },
+                "pbrtContent": {
+                  "example": "any"
+                },
+                "lastHash": {
+                  "example": "any"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "调试渲染成功",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "example": "任务标识UUID"
+                },
+                "result": {
+                  "type": "string",
+                  "example": "渲染结果信息"
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "413": {
+            "description": "Payload Too Large"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/list": {
+      "get": {
+        "tags": [
+          "系统状态"
+        ],
+        "description": "获取所有渲染任务列表",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "query",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功获取任务列表",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "uuid": {
+                        "type": "string",
+                        "example": "任务UUID"
+                      },
+                      "filename": {
+                        "type": "string",
+                        "example": "文件名"
+                      },
+                      "status": {
+                        "type": "string",
+                        "example": "任务状态"
+                      },
+                      "timestamp": {
+                        "type": "string",
+                        "example": "创建时间"
+                      }
+                    }
+                  }
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    },
+    "/v1/model": {
+      "get": {
+        "tags": [
+          "模型相关"
+        ],
+        "description": "获取所有模型列表",
+        "responses": {
+          "200": {
+            "description": "成功获取模型列表",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "uuid": {
+                        "type": "string",
+                        "example": "模型UUID"
+                      },
+                      "name": {
+                        "type": "string",
+                        "example": "模型名称"
+                      },
+                      "path": {
+                        "type": "string",
+                        "example": "模型路径"
+                      },
+                      "thumbnail": {
+                        "type": "string",
+                        "example": "缩略图URL"
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "example": "创建时间"
+                      }
+                    }
+                  }
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "模型相关"
+        ],
+        "description": "上传新的3D模型文件",
+        "consumes": [
+          "multipart/form-data"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "formData",
+            "type": "file",
+            "required": true,
+            "description": "要上传的3D模型文件"
+          },
+          {
+            "name": "info",
+            "in": "formData",
+            "type": "string",
+            "required": false,
+            "description": "模型信息JSON字符串"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "info": {
+                  "example": "any"
+                },
+                "defaultInfoFields": {
+                  "example": "any"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "上传成功",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "example": "模型UUID"
+                },
+                "path": {
+                  "type": "string",
+                  "example": "模型路径"
+                },
+                "success": {
+                  "type": "boolean",
+                  "example": true
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/model/{uuid}": {
+      "delete": {
+        "tags": [
+          "模型相关"
+        ],
+        "description": "删除指定的模型",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "description": "模型的UUID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "success": {
+                  "type": "boolean",
+                  "example": true
+                },
+                "message": {
+                  "type": "string",
+                  "example": "删除成功"
+                }
+              },
+              "xml": {
+                "name": "main"
+              }
+            }
+          },
+          "404": {
+            "description": "模型不存在"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      },
+      "get": {
+        "description": "",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/debug/models": {
+      "get": {
+        "tags": [
+          "系统状态"
+        ],
+        "description": "模型调试页面",
+        "responses": {
+          "200": {
+            "description": "成功返回模型调试页面"
+          }
+        }
+      }
+    },
+    "/v1/preview-zip": {
+      "post": {
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/convert/{uuid}": {
+      "get": {
+        "description": "",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/model/nono/{uuid}": {
+      "get": {
+        "description": "",
+        "produces": [
+          "text/plain"
+        ],
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/model/momo/{uuid}": {
+      "get": {
+        "description": "",
+        "produces": [
+          "text/plain"
+        ],
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/v1/transform": {
+      "post": {
+        "description": "",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "example": "any"
+                },
+                "translate": {
+                  "example": "any"
+                },
+                "rotate": {
+                  "example": "any"
+                },
+                "scale": {
+                  "example": "any"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "TransformRequest": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "example": 0
+            },
+            "y": {
+              "type": "number",
+              "example": 0
+            },
+            "z": {
+              "type": "number",
+              "example": 0
+            }
+          }
+        },
+        "rotation": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "example": 0
+            },
+            "y": {
+              "type": "number",
+              "example": 0
+            },
+            "z": {
+              "type": "number",
+              "example": 0
+            }
+          }
+        },
+        "scale": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "example": 1
+            },
+            "y": {
+              "type": "number",
+              "example": 1
+            },
+            "z": {
+              "type": "number",
+              "example": 1
+            }
+          }
+        }
+      },
+      "required": [
+        "position",
+        "rotation",
+        "scale"
+      ]
+    }
+  }
+}
