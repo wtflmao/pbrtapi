@@ -484,6 +484,8 @@ app.post('/v1/debug/render', upload.single('pbrtFile'), asyncHandler(async (req,
             const modelUuidRegex = /\/home\/pog\/pbrtapi\/uploads\/models\/([a-f0-9-]+)\/textures\/\*(\d+)/g;
             let match;
             const modelTextures = new Map(); // 存储模型ID及其纹理文件列表
+            const modelId_d = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/gm.exec(absolutePbrtFilePath)?.[1] || null;
+            console.log(`[Debug Render] ${/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/gm.exec(absolutePbrtFilePath)?.[0] || null}, ${/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/gm.exec(absolutePbrtFilePath)?.[1] || null}`);
             
             // 收集所有引用的模型ID和纹理索引
             while ((match = modelUuidRegex.exec(pbrtContent)) !== null) {
@@ -508,10 +510,11 @@ app.post('/v1/debug/render', upload.single('pbrtFile'), asyncHandler(async (req,
             
             // 使用相对路径替代绝对路径模式，这样即使找不到确切文件名也能保证路径格式正确
             const fixedContent = pbrtContent.replace(
-                /\/home\/pog\/pbrtapi\/uploads\/models\/([a-f0-9-]+)\/textures\/\*(\d+)/g,
-                (match, modelId, textureIndex) => {
+                ///\/home\/pog\/pbrtapi\/uploads\/models\/([a-f0-9-]+)\/textures\/\*(\d+)/g,
+                /textures\/\*(\d+)/g,
+                (match, textureIndex) => {
                     // 直接使用相对路径+通配符，在回到上传目录之前这是最安全的方案
-                    return `models/${modelId}/textures/*${textureIndex}`;
+                    return `models/${modelId_d}/textures/*${textureIndex}`;
                 }
             );
             
@@ -1397,84 +1400,107 @@ app.get('/v1/convert/:uuid', asyncHandler(async (req, res) => {
             alreadyConverted = true;
             console.log(`[Convert] 模型 ${modelId} 已经转换过，将处理纹理和材质名称前缀`);
         } else {
+            // 确保textures目录存在
+            const texturesDir = path.join(modelDir, 'textures');
+            if (!fs.existsSync(texturesDir)) {
+                console.log(`[Convert] 正在创建textures目录: ${texturesDir}`);
+                fs.mkdirSync(texturesDir, { recursive: true, mode: 0o777 });
+                console.log(`[Convert] 成功创建textures目录, 权限: ${fs.statSync(texturesDir).mode.toString(8)}`);
+            } else {
+                console.log(`[Convert] textures目录已存在: ${texturesDir}`);
+            }
+            
+            // 获取文件扩展名（小写）
+            const fileExt = path.extname(modelFilePath).toLowerCase();
+            
+            // 特殊处理GLTF/GLB格式的模型
+            if (['.gltf', '.glb'].includes(fileExt)) {
+                console.log(`[Convert] 检测到GLTF/GLB格式模型，使用gltf-pipeline处理`);
+                try {
+                    const execFile = util.promisify(childProcess.execFile);
+                    const modelFilename = path.basename(modelFilePath);
+                    
+                    // 进入textures目录执行gltf-pipeline
+                    console.log(`[Convert] 执行gltf-pipeline命令提取纹理`);
+                    const gltfCmd = await execFile('npx', [
+                        'gltf-pipeline',
+                        '-i', `${modelFilePath}`,
+                        '-o', './extracted_model.glb',
+                        '--separate-textures'
+                    ], {
+                        cwd: texturesDir
+                    });
+                    
+                    if (gltfCmd.stderr) {
+                        console.warn(`[Convert] gltf-pipeline警告: ${gltfCmd.stderr}`);
+                    }
+                    
+                    // 删除原始模型文件，用提取后的文件替换
+                    const extractedModelPath = path.join(texturesDir, 'extracted_model.glb');
+                    if (fs.existsSync(extractedModelPath)) {
+                        console.log(`[Convert] 用提取后的模型替换原始模型`);
+                        fs.unlinkSync(modelFilePath);
+                        fs.copyFileSync(extractedModelPath, modelFilePath);
+                        fs.unlinkSync(extractedModelPath);
+                    } else {
+                        console.warn(`[Convert] 提取后的模型文件不存在: ${extractedModelPath}`);
+                    }
+                } catch (error) {
+                    console.error(`[Convert] gltf-pipeline处理失败: ${error.message}`);
+                    if (error.stderr) {
+                        console.error(`[Convert] 错误输出: ${error.stderr}`);
+                    }
+                }
+            }
+            
+            // 将textures目录中的非PNG图片转换为PNG
+            try {
+                // 重新定义execFile
+                const execFile = util.promisify(childProcess.execFile);
+
+                console.log(`[Convert] 开始将非PNG图片转换为PNG格式`);
+                const imageFiles = fs.readdirSync(texturesDir);
+                
+                for (const imageFile of imageFiles) {
+                    const imgPath = path.join(texturesDir, imageFile);
+                    const imgExt = path.extname(imageFile).toLowerCase();
+                    
+                    // 如果不是PNG格式，使用ImageMagick转换
+                    if (imgExt !== '.png' && ['.jpg', '.jpeg', '.bmp', '.tga', '.tiff', '.webp', '.psd', '.gif'].includes(imgExt)) {
+                        const imgName = path.basename(imageFile, imgExt);
+                        const pngPath = path.join(texturesDir, `${imgName}.png`);
+                        
+                        console.log(`[Convert] 转换图片: ${imageFile} -> ${imgName}.png`);
+                        await execFile('convert', [imgPath, pngPath], {
+                            cwd: texturesDir
+                        });
+                        
+                        // 删除原始图片
+                        fs.unlinkSync(imgPath);
+                    }
+                }
+            } catch (error) {
+                console.warn(`[Convert] 图片转换过程出错: ${error.message}`);
+            }
+            
             // 执行assimp命令进行转换
             try {
                 const execFile = util.promisify(childProcess.execFile);
                 
-                // 切换到模型目录并执行assimp
-                console.log(`[Convert] 当前目录: ${modelDir}`);
-                console.log(`[Convert] 模型文件: ${modelPath}`);
-                
-                // 使用绝对路径确保文件能被找到
-                const fullModelPath = path.join(modelDir, modelPath);
-                console.log(`[Convert] 完整模型路径: ${fullModelPath}`);
-                
-                // 处理文件中可能包含的空格和特殊字符
-                // 创建一个没有特殊字符的临时文件进行处理
-                const fileExt = path.extname(fullModelPath);
-                const tempFilename = `temp_model_${Date.now()}${fileExt}`;
-                const tempFilePath = path.join(modelDir, tempFilename);
-                
-                // 复制文件到临时文件
-                fs.copyFileSync(fullModelPath, tempFilePath);
-                console.log(`[Convert] 为防止特殊字符问题，创建临时文件: ${tempFilePath}`);
-                
-                try {
-                    // 确保textures目录存在 - 使用try/catch包裹，避免权限问题
-                    try {
-                        // 先检查textures目录是否已存在
-                        const texturesDir = path.join(modelDir, 'textures');
-                        if (!fs.existsSync(texturesDir)) {
-                            console.log(`[Convert] 正在创建textures目录: ${texturesDir}`);
-                            // 使用递归选项确保父目录也被创建
-                            fs.mkdirSync(texturesDir, { recursive: true, mode: 0o777 });
-                            console.log(`[Convert] 成功创建textures目录, 权限: ${fs.statSync(texturesDir).mode.toString(8)}`);
-                        } else {
-                            console.log(`[Convert] textures目录已存在: ${texturesDir}`);
-                        }
-                        
-                        // 验证目录权限
-                        try {
-                            const testFile = path.join(modelDir, 'textures', 'test.txt');
-                            fs.writeFileSync(testFile, 'test');
-                            fs.unlinkSync(testFile);
-                            console.log(`[Convert] textures目录权限正常, 可以写入文件`);
-                        } catch (permErr) {
-                            console.warn(`[Convert] textures目录权限问题: ${permErr.message}`);
-                        }
-                    } catch (dirErr) {
-                        console.warn(`[Convert] 创建textures目录失败: ${dirErr.message}, 但继续尝试转换`);
-                    }
+                console.log(`[Convert] 执行assimp命令: assimp export ${modelPath} no -fpbrt full`);
+                const result = await execFile('assimp', ['export', modelPath, 'no', '-fpbrt', 'full'], {
+                    cwd: modelDir
+                });
 
-                    // 使用临时文件名，但确保在命令行中正确引用完整路径
-                    console.log(`[Convert] 执行assimp命令: assimp export ${tempFilename} no -fpbrt full`);
-                    const result = await execFile('assimp', ['export', tempFilename, 'no', '-fpbrt', 'full'], {
-                        cwd: modelDir
-                    });
-
-                    console.log(`[Convert] 成功转换模型 ${modelId} 为PBRT格式`);
-                    if (result.stderr) {
-                        console.warn(`[Convert] 转换警告: ${result.stderr}`);
-                    }
-                    if (result.stdout) {
-                        console.log(`[Convert] 转换输出: ${result.stdout}`);
-                    }
-                } finally {
-                    // 无论成功失败，都尝试删除临时文件
-                    try {
-                        if (fs.existsSync(tempFilePath)) {
-                            fs.unlinkSync(tempFilePath);
-                            console.log(`[Convert] 已删除临时文件: ${tempFilename}`);
-                        }
-                    } catch (e) {
-                        console.warn(`[Convert] 删除临时文件失败: ${e.message}`);
-                    }
+                console.log(`[Convert] 成功转换模型 ${modelId} 为PBRT格式`);
+                if (result.stderr) {
+                    console.warn(`[Convert] 转换警告: ${result.stderr}`);
                 }
                 
                 // 检查输出文件是否存在
                 const expectedPath = path.join(modelDir, 'no.pbrt');
                 if (fs.existsSync(expectedPath)) {
-                    // 如果输出文件名是no.pbrt（而不是nono.pbrt），则重命名
+                    // 如果输出文件名是no.pbrt（而不是nono.pbrt），则重命名为nono.pbrt
                     fs.renameSync(expectedPath, nonoPbrtPath);
                 }
 
@@ -1484,12 +1510,8 @@ app.get('/v1/convert/:uuid', asyncHandler(async (req, res) => {
                 }
             } catch (error) {
                 console.error(`[Convert] 执行assimp命令失败: ${error.message}`);
-                // 添加更多错误信息方便调试
                 if (error.stderr) {
                     console.error(`[Convert] 错误输出: ${error.stderr}`);
-                }
-                if (error.stdout) {
-                    console.error(`[Convert] 标准输出: ${error.stdout}`);
                 }
                 throw new Error(`模型转换失败: ${error.message}`);
             }
@@ -1545,27 +1567,83 @@ app.get('/v1/convert/:uuid', asyncHandler(async (req, res) => {
                 
                 // 修正PBRT文件中的纹理路径，确保使用models/{uuid}/textures/*N格式
                 const texPathRegex = /"string filename"\s+"([^"]+)"/g;
+                // 扩展匹配，包含其他纹理属性如normalmap等
+                const allTexPathRegex = /"string (filename|normalmap|bumpmap|specularmap|roughnessmap|metallicmap)"\s+"([^"]+)"/g;
                 const updatedPaths = new Map();
+                const uuidRegex = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/gm;
                 
+                // 尝试从文件路径中提取UUID
+                const extractedUuid = uuidRegex.exec(modelDir)?.[0] || modelId;
+                console.log(`[Debug Render] Extracted UUID: ${extractedUuid}`);
+                
+                // 首先处理标准的"string filename"路径
+                let texPathMatch;
                 while ((texPathMatch = texPathRegex.exec(newContent)) !== null) {
                     const originalPath = texPathMatch[1];
-                    // 如果是绝对路径，转换为相对路径
-                    if (originalPath.startsWith('/home/pog/pbrtapi/uploads/models/')) {
-                        // 从uploads目录开始的相对路径
-                        const relativePath = originalPath.replace('/home/pog/pbrtapi/uploads/', '');
+                    
+                    // 处理多种可能的路径情况
+                    const pathConditions = [
+                        // 绝对路径
+                        originalPath.startsWith('/home/pog/pbrtapi/uploads/models/'),
+                        // 相对路径，但不是已经是 models/{uuid}/textures/ 格式
+                        originalPath.startsWith('textures/') && !originalPath.startsWith(`models/${extractedUuid}/textures/`),
+                        // 其他可能的相对路径变体
+                        originalPath.includes('/textures/') && !originalPath.includes(`models/${extractedUuid}/textures/`)
+                    ];
+                    
+                    if (pathConditions.some(Boolean)) {
+                        // 提取实际的纹理文件名
+                        const textureFileName = path.basename(originalPath);
+                        const relativePath = `models/${extractedUuid}/textures/${textureFileName}`;
+                        
                         updatedPaths.set(originalPath, relativePath);
-                        console.log(`[Convert] 转换纹理路径为相对路径: ${originalPath} -> ${relativePath}`);
+                        console.log(`[Convert] 转换纹理路径为标准格式: ${originalPath} -> ${relativePath}`);
                     }
-                    // 已经是相对路径或其他特殊情况则不处理
                 }
                 
-                // 应用路径更新
+                // 然后处理材质中的其他纹理属性路径（normalmap等）
+                let allTexPathMatch;
+                while ((allTexPathMatch = allTexPathRegex.exec(newContent)) !== null) {
+                    const attrType = allTexPathMatch[1];  // filename, normalmap, etc.
+                    const originalPath = allTexPathMatch[2];
+                    
+                    // 如果是已经处理过的filename属性则跳过
+                    if (attrType === 'filename' && updatedPaths.has(originalPath)) {
+                        continue;
+                    }
+                    
+                    // 处理多种可能的路径情况
+                    const pathConditions = [
+                        // 绝对路径
+                        originalPath.startsWith('/home/pog/pbrtapi/uploads/models/'),
+                        // 相对路径，但不是已经是 models/{uuid}/textures/ 格式
+                        originalPath.startsWith('textures/') && !originalPath.startsWith(`models/${extractedUuid}/textures/`),
+                        // 其他可能的相对路径变体
+                        originalPath.includes('/textures/') && !originalPath.includes(`models/${extractedUuid}/textures/`)
+                    ];
+                    
+                    if (pathConditions.some(Boolean)) {
+                        // 提取实际的纹理文件名
+                        const textureFileName = path.basename(originalPath);
+                        const relativePath = `models/${extractedUuid}/textures/${textureFileName}`;
+                        
+                        updatedPaths.set(originalPath, relativePath);
+                        console.log(`[Convert] 转换材质中${attrType}纹理路径为标准格式: ${originalPath} -> ${relativePath}`);
+                    }
+                }
+                
+                // 应用路径更新到所有纹理属性
                 updatedPaths.forEach((newPath, oldPath) => {
                     const escOldPath = escapeRegExp(oldPath);
-                    newContent = newContent.replace(
-                        new RegExp(`"string filename"\\s+"${escOldPath}"`, 'g'),
-                        `"string filename" "${newPath}"`
-                    );
+                    
+                    // 对所有类型的纹理属性进行替换
+                    const attrTypes = ['filename', 'normalmap', 'bumpmap', 'specularmap', 'roughnessmap', 'metallicmap'];
+                    attrTypes.forEach(attrType => {
+                        newContent = newContent.replace(
+                            new RegExp(`"string ${attrType}"\\s+"${escOldPath}"`, 'g'),
+                            `"string ${attrType}" "${newPath}"`
+                        );
+                    });
                 });
                 
                 // 检查空名称材质的处理
