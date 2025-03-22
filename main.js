@@ -1904,6 +1904,18 @@ app.post('/v1/transform', express.json(), asyncHandler(async (req, res) => {
         // 读取nono.pbrt文件内容
         const pbrtContent = fs.readFileSync(nonoPbrtPath, 'utf8');
         
+        // 在文件开头添加注释，记录时间和变换参数
+        const timestamp = new Date().toISOString();
+        let headerComment = `# MOMO transform applied on ${timestamp}\n`;
+        headerComment += `# Parameters:\n`;
+        headerComment += translate ? `# - Translate: [${translate.join(', ')}]\n` : '# - Translate: none\n';
+        headerComment += rotate ? `# - Rotate: [${rotate.join(', ')}]\n` : '# - Rotate: none\n';
+        headerComment += scale ? `# - Scale: [${scale.join(', ')}]\n` : '# - Scale: none\n';
+        headerComment += `#-------------------------------------------\n\n`;
+          
+        // 修复AttributeEndAttributeBegin问题 - 添加换行符
+        let modifiedContent = pbrtContent.replace(/AttributeEndAttributeBegin/g, "AttributeEnd\nAttributeBegin");
+        
         // 生成变换命令字符串
         const transformCommands = [];
         if (translate) {
@@ -1919,86 +1931,225 @@ app.post('/v1/transform', express.json(), asyncHandler(async (req, res) => {
         // 生成变换命令
         const transformStr = transformCommands.join('\n');
         
-        // 在文件开头添加注释，记录时间和变换参数
-        const timestamp = new Date().toISOString();
-        let headerComment = `# Transform applied on ${timestamp}\n`;
-        headerComment += `# Parameters:\n`;
-        headerComment += translate ? `# - Translate: [${translate.join(', ')}]\n` : '# - Translate: none\n';
-        headerComment += rotate ? `# - Rotate: [${rotate.join(', ')}]\n` : '# - Rotate: none\n';
-        headerComment += scale ? `# - Scale: [${scale.join(', ')}]\n` : '# - Scale: none\n';
-        headerComment += `#-------------------------------------------\n\n`;
-          
-        // 使用正则表达式查找所有AttributeBegin/AttributeEnd对
-        const attributePattern = /(#.*\n)?\s*(AttributeBegin\s*(?:[^\n]*\n)+?)(?=\s*Shape|\s*Material|\s*NamedMaterial|\s*LightSource|\s*CoordSysTransform|\s*AttributeEnd)/g;
-        
-        let modifiedContent = pbrtContent;
-        let match;
-        
-        // 使用循环处理每个匹配项
-        while ((match = attributePattern.exec(pbrtContent)) !== null) {
-            const fullMatch = match[0];
-            const commentLine = match[1] || '';
-            const attrBlock = match[2];
+        // 如果没有变换命令，直接返回原始内容
+        if (transformCommands.length === 0) {
+            const finalContent = headerComment + modifiedContent;
+            const fixedContent = finalContent.replace(/AttributeEndAttributeBegin/g, "AttributeEnd\nAttributeBegin");
+            const relativePathContent = sanitizePbrtPaths(fixedContent, modelDir, true);
+            fs.writeFileSync(momoPbrtPath, relativePathContent, 'utf8');
             
-            // 检查是否有no-more-transformation标记
-            if (commentLine && commentLine.includes('#[no-more-transformation]')) {
-                continue; // 跳过这个块
-            }
-            
-            // 检查是否已经有变换命令
-            const hasTranslate = /\s+Translate\s+/.test(attrBlock);
-            const hasRotate = /\s+Rotate\s+/.test(attrBlock);
-            const hasScale = /\s+Scale\s+/.test(attrBlock);
-            
-            // 如果没有变换命令或需要添加新命令
-            if (transformCommands.length > 0) {
-                let replacementText;
-                
-                if (hasTranslate || hasRotate || hasScale) {
-                    // 查找最后一个变换命令
-                    const commands = ['Translate', 'Rotate', 'Scale'];
-                    let lastPos = -1;
-                    let lastCommand = '';
-                    
-                    for (const cmd of commands) {
-                        const pos = attrBlock.lastIndexOf(cmd);
-                        if (pos > lastPos) {
-                            lastPos = pos;
-                            lastCommand = cmd;
-                        }
-                    }
-                    
-                    if (lastPos !== -1) {
-                        // 找到命令所在行的结束位置
-                        const lineEnd = attrBlock.indexOf('\n', lastPos);
-                        if (lineEnd !== -1) {
-                            // 在最后一个变换命令后插入新命令
-                            replacementText = commentLine + 
-                                             attrBlock.substring(0, lineEnd + 1) + 
-                                             transformStr + '\n' + 
-                                             attrBlock.substring(lineEnd + 1);
-                        } else {
-                            // 如果找不到换行符，附加到块末尾
-                            replacementText = commentLine + attrBlock + '\n' + transformStr + '\n';
-                        }
-                    } else {
-                        // 如果没有找到变换命令（不应该发生），附加到块末尾
-                        replacementText = commentLine + attrBlock + transformStr + '\n';
-                    }
-                } else {
-                    // 如果没有变换命令，在AttributeBegin后添加
-                    replacementText = commentLine + attrBlock + transformStr + '\n';
+            // 更新info.json
+            if (fs.existsSync(infoPath)) {
+                try {
+                    const modelInfo = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+                    modelInfo.momo_available = true;
+                    modelInfo.momo_transform = {
+                        timestamp,
+                        translate: translate || null,
+                        rotate: rotate || null,
+                        scale: scale || null
+                    };
+                    fs.writeFileSync(infoPath, JSON.stringify(modelInfo, null, 4), 'utf8');
+                } catch (err) {
+                    console.error(`[Transform] 更新info.json失败: ${err.message}`);
+                    // 不中断流程
                 }
-                
-                // 替换原始匹配的内容
-                modifiedContent = modifiedContent.replace(fullMatch, replacementText);
-                // 更新模式匹配位置，避免无限循环
-                attributePattern.lastIndex += (replacementText.length - fullMatch.length);
             }
+            
+            return res.json({
+                message: '模型转换成功，但未应用任何变换',
+                uuid,
+                momo_pbrt: 'momo.pbrt',
+                transforms: {
+                    translate: null,
+                    rotate: null,
+                    scale: null
+                }
+            });
         }
         
+        // 分析完整的PBRT文本
+        const lines = modifiedContent.split('\n');
+        const resultLines = [];
+        
+        // 识别PBRT结构，包括不在AttributeBegin内的变换命令
+        function analyzePbrtStructure(lines) {
+            const result = [];
+            const structure = [];
+            let depth = 0;
+            let inNoTransformBlock = false;
+            let insideAttribute = false;  // 标记是否在AttributeBegin/AttributeEnd块内
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                const isComment = line.startsWith('#');
+                const isAttributeBegin = line === 'AttributeBegin';
+                const isAttributeEnd = line === 'AttributeEnd';
+                const isTransform = line.startsWith('Translate') || 
+                                    line.startsWith('Rotate') || 
+                                    line.startsWith('Scale') ||
+                                    line.startsWith('Transform [');
+                
+                // 检查是否是no-more-transformation注释
+                if (line.includes('#[no-more-transformation]')) {
+                    inNoTransformBlock = true;
+                }
+                
+                // 如果遇到AttributeBegin
+                if (isAttributeBegin) {
+                    depth++;
+                    insideAttribute = true;
+                    
+                    // 只关注顶层AttributeBegin块
+                    if (depth === 1) {
+                        structure.push({
+                            type: 'attributeBegin',
+                            lineIndex: i,
+                            depth: depth,
+                            isNoTransform: inNoTransformBlock,
+                            hasTransform: false,  // 稍后更新
+                            lastTransformLineIndex: -1,  // 稍后更新
+                            processed: false  // 标记是否已处理过
+                        });
+                    }
+                }
+                // 如果遇到AttributeEnd
+                else if (isAttributeEnd) {
+                    // 找到匹配的AttributeBegin
+                    if (depth === 1) {
+                        // 查找最后一个未闭合的顶层AttributeBegin
+                        const openBeginIndex = structure.findIndex(item => 
+                            item.type === 'attributeBegin' && 
+                            item.depth === depth && 
+                            item.endLineIndex === undefined);
+                            
+                        if (openBeginIndex !== -1) {
+                            structure[openBeginIndex].endLineIndex = i;
+                        }
+                        
+                        inNoTransformBlock = false;
+                        insideAttribute = false;
+                    }
+                    
+                    depth = Math.max(0, depth - 1);  // 确保深度不会小于0
+                }
+                // 如果是变换命令
+                else if (isTransform) {
+                    // 只处理顶层属性块内的变换命令或直接位于顶层的变换命令
+                    if (depth === 1 && insideAttribute) {
+                        // 查找当前所属的AttributeBegin块
+                        const activeBlockIndex = structure.findIndex(item => 
+                            item.type === 'attributeBegin' && 
+                            item.depth === depth && 
+                            item.endLineIndex === undefined);
+                            
+                        if (activeBlockIndex !== -1) {
+                            structure[activeBlockIndex].hasTransform = true;
+                            structure[activeBlockIndex].lastTransformLineIndex = 
+                                Math.max(structure[activeBlockIndex].lastTransformLineIndex, i);
+                        }
+                    } 
+                    else if (depth === 0) {
+                        // 变换命令不在任何AttributeBegin块内，创建一个虚拟块
+                        structure.push({
+                            type: 'transformOutsideAttribute',
+                            lineIndex: i,
+                            depth: 0,
+                            isNoTransform: inNoTransformBlock,
+                            processed: false
+                        });
+                    }
+                }
+            }
+            
+            // 处理异常情况：清理没有结束的AttributeBegin块
+            for (let i = 0; i < structure.length; i++) {
+                if (structure[i].type === 'attributeBegin' && structure[i].endLineIndex === undefined) {
+                    structure[i].endLineIndex = lines.length - 1; // 假设在文件末尾结束
+                }
+            }
+            
+            return structure;
+        }
+        
+        // 修正处理逻辑，确保变换命令添加到正确的位置
+        const structure = analyzePbrtStructure(lines);
+        
+        // 遍历所有AttributeBegin块，添加变换命令
+        function addTransformCommands(lines, structure, transformCommands) {
+            let result = [...lines];
+            let offset = 0;  // 跟踪插入命令后行号的偏移量
+            
+            // 按行索引排序，确保从文件开头到结尾处理
+            structure.sort((a, b) => a.lineIndex - b.lineIndex);
+            
+            // 标记处理过的行范围，避免重复处理
+            const processedRanges = [];
+            
+            for (const block of structure) {
+                // 检查此块是否已经在某个处理过的范围内
+                let skipBlock = false;
+                for (const range of processedRanges) {
+                    if (block.lineIndex >= range.start && block.lineIndex <= range.end) {
+                        skipBlock = true;
+                        break;
+                    }
+                }
+                if (skipBlock || block.processed) continue;
+                
+                // 只处理顶层AttributeBegin块且不是no-more-transformation块
+                if ((block.type === 'attributeBegin' && block.depth === 1 && !block.isNoTransform) ||
+                    (block.type === 'transformOutsideAttribute' && !block.isNoTransform)) {
+                    
+                    // 找到插入位置
+                    let insertIndex;
+                    
+                    if (block.type === 'attributeBegin') {
+                        // 对于AttributeBegin块，在块内部添加变换
+                        if (block.hasTransform) {
+                            // 在最后一个变换命令后插入
+                            insertIndex = block.lastTransformLineIndex + 1 + offset;
+                        } else {
+                            // 在AttributeBegin后直接插入
+                            insertIndex = block.lineIndex + 1 + offset;
+                        }
+                        
+                        // 标记此块的范围为已处理
+                        processedRanges.push({
+                            start: block.lineIndex, 
+                            end: block.endLineIndex
+                        });
+                    } else {
+                        // 对于不在块内的变换命令，在命令后插入
+                        insertIndex = block.lineIndex + 1 + offset;
+                        
+                        // 标记此行为已处理
+                        processedRanges.push({
+                            start: block.lineIndex, 
+                            end: block.lineIndex
+                        });
+                    }
+                    
+                    // 插入变换命令
+                    if (insertIndex > 0 && insertIndex <= result.length) {
+                        const commandLines = transformCommands.map(cmd => cmd);
+                        result.splice(insertIndex, 0, ...commandLines);
+                        offset += commandLines.length;
+                    }
+                    
+                    // 标记为已处理
+                    block.processed = true;
+                }
+            }
+            
+            return result;
+        }
+        
+        // 应用修改
+        const transformedLines = addTransformCommands(lines, structure, transformCommands);
+        
         // 构建最终文件内容
-        const finalContent = headerComment + modifiedContent;
+        const finalContent = headerComment + transformedLines.join('\n');
         
         // 修复AttributeEndAttributeBegin问题 - 添加换行符
         const fixedContent = finalContent.replace(/AttributeEndAttributeBegin/g, "AttributeEnd\nAttributeBegin");
